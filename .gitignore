@@ -1,0 +1,14 @@
+### Build output ###
+out/
+*.class
+
+### IntelliJ IDEA ###
+.idea/
+*.iml
+
+### Local design-doc backups (redundant once in git history) ###
+backups/
+
+### OS cruft ###
+.DS_Store
+Thumbs.db
