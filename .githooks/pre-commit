@@ -1,0 +1,10 @@
+#!/bin/sh
+# Regenerate the plain-text design copy whenever PLEXUS_DESIGN.md is part of the commit,
+# and stage the result so it lands in the same commit.
+#
+# Enabled via:  git config core.hooksPath .githooks   (run once per clone)
+
+if git diff --cached --name-only | grep -qx 'PLEXUS_DESIGN.md'; then
+    sh scripts/extract-design-text.sh PLEXUS_DESIGN.md PLEXUS_DESIGN_TEXT_ONLY.txt
+    git add PLEXUS_DESIGN_TEXT_ONLY.txt
+fi

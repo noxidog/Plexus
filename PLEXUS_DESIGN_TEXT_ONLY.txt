@@ -1,0 +1,399 @@
+Plexus: Design
+
+A symmetry-routed exact classifier — how it resolves a shape to a label.
+
+0. The task
+
+The input is a binary square grid (an int[] of side² cells, each 0 or 1). Each grid carries a label: 1 if it belongs to a target shape class, 0 otherwise. The class is defined by structure under symmetry — a shape and all of its rotations/reflections form one class — so the positives are typically a handful of symmetry orbits in a sea of negatives.
+
+The hard case is contradictions: grids labelled against their own symmetry orbit. Two shapes can be identical under every symmetry-derived quantity yet carry opposite labels (e.g. one member of an orbit flipped to 0 while its orbit-mates stay 1, or a shape labelled 1 while its rotated copies stay 0). No symmetry quantity can separate such a pair — they are the crux the design must handle honestly rather than smooth over.
+
+TODO — domain scope. The machine is general over side (grid size is read from the data, see §2), but assumes a square grid of binary cells. Non-square grids, multi-valued cells, or non-grid domains need a different symmetry group and descriptor (§2, §10).
+
+Reference datasets (data/, one slice-question each — see data/README.md): minimal by construction. Each carries only the positive class, plus — for the collision sets — the few negatives that share a context with a positive; the router defaults every unseen key to reject, so the sea of negatives is redundant. The canonical example is the T-tetromino orbit on a 3×3 grid (conservation-t-orbit-3x3), with adversarial variants injecting the contradictions above (twin-t-flip, position-corner-dot). Useful as concrete examples; nothing in the core depends on these numbers.
+
+1. What it is
+
+Plexus is a router, not a network. It has no learned weights, no gates, no thresholds, no statistics. Every input is resolved to a context by pure structural routing, and the context returns its label.
+
+Two phases:
+
+1. Resolve — build a composite routing Key from the grid: a symmetry verdict refined by a chain of orthogonal, symmetry-invariant coordinates.
+2. Decide — the Context (bucket) the key addresses owns its answer: its majority label, overridden by an exact set of memorised exceptions (the irreducible contradictions).
+
+Resolution is exact and discrete; the only memory is the exact exception set.
+
+2. The symmetry core
+
+The rigid symmetries of a square form the dihedral group D4 (8 elements): identity, three rotations (90/180/270), two axis mirrors (horizontal, vertical), two diagonal mirrors (main, anti). The group is injected into the Plexus, so the group choice (full D4 vs a subgroup) lives in one place — the caller. Each Transform is parameterized by the grid's side s, so the same group acts on any size of square grid.
+
+Fundamental domains (octants)
+
+The four reflection axes are four lines through the centre at 45° spacing, cutting the square into 8 wedges — the fundamental domains, one per group element. Routing by symmetry is collapsing a shape onto its fundamental domain: the more symmetry it has, the smaller the wedge it folds into.
+
+Canonical stabilizer
+
+A shape's symmetry is its stabilizer — the subset of the group that fixes it (SymmetryGroup.stabilizer). To make the descriptor orientation-free, the symmetry verdict is the rotation-canonical stabilizer: the minimum stabilizer bitmask over the grid's rotations (canonicalStabilizer, stepping by the group's minimalRotation). This folds a shape and its rotated copies onto one key — the one degeneracy kept on purpose (rotation of a genuine shape), because it gives the class enough members to be coherent.
+
+A shape is radial if some non-trivial rotation fixes its centred form (rotationFixes) — a round object (dot, plus) with no meaningful orientation. Radial shapes take a different branch (§4).
+
+The group lives in org.tervel.plexus.symmetry: Transform (one rigid grid→grid map, extends UnaryOperator<int[]>), SymmetryGroup (stabilizer, canonicalStabilizer, rotationFixes, minimalRotation, rotations, describe), and Dihedral.d4().
+
+TODO — group is square-specific. Dihedral.d4() is the only group implemented. Other domains (hexagonal grids, 3-D, non-grid point sets) would need their own SymmetryGroup. The injection seam is in place; the alternatives are not.
+
+3. The invariant chain (orthogonal refinements)
+
+The symmetry verdict quotients a shape into its orbit. Invariants refine that orbit with orthogonal coordinates. They are an injected chain — the caller composes "do symmetry, plus refine by these."
+
+Each Invariant is a coordinate map grid → int (extends ToIntFunction<int[]>, so the coordinate is applyAsInt(grid)), declares boolean applies(radial), a name(), and carries its contract as an executable default method invariantUnder(Transform, grid) (applyAsInt(t.apply(g)) == applyAsInt(g)). The current chain:
+
+ Invariant  Coordinate  Applies to 
+ Signature  mass V and connectivity E packed as V·W + E  all shapes 
+ MaxDegree (opt-in)  max vertex degree Δ (path vs fork)  all shapes 
+ Position (opt-in)  centre-of-mass quadrant  radial only 
+
+Signature is the two invariant graph quantities bundled into one column — composed from a separate Mass invariant (V, cell count) and Connectivity invariant (E, edge count), wired together in Main as new Signature(new Mass(), new Connectivity(), side). They are one invariant on purpose — separately each is blind in one direction (mass alone admits a shattered blob of equal count; connectivity alone admits a same-structure shape of different size), and only their conjunction pins size and structure. The packing V·W + E (with W = maxEdges+1) is injective, so "same signature" iff "same mass and same connectivity"; Fiber unpacks the mass back via Signature.massOf. Both V and E are D4-invariant (every rigid transform preserves cell count and adjacency count), so the bundle honours the invariance contract. Position is opt-in (radial-only); it earns its place only on dot-position contradictions.
+
+The bounding box is a structural check, not an invariant
+
+The shape's bounding box is a direct readout of which symmetries can survive: a non-square box (long ≠ short) is a proof that rot90, rot270, and both diagonal mirrors are not in the stabilizer — each transposes the box, and a thing with a different bounding box can't equal itself. This caps the stabilizer at a subgroup of D2 = {e, rot180, mirrorH, mirrorV}. It earns its keep as a free radial pre-filter — "radial" needs rot90, which needs a square box, so a non-square box is an instant proof of non-radial, and isRadial short-circuits on it before the centred-rotation check. The box is also a generation aid in Fiber (which derives it per candidate); it is never a routing column.
+
+The invariance contract
+
+The load-bearing rule: an invariant must be invariant under the routing symmetry, or it undoes the canonicalization and shatters the orbit. The rule is executable, not just prose — Invariant.invariantUnder(t, g) checks it per transform. Mass and connectivity are rotation-invariant ✓. Position is not — and that is exactly why it applies only to radial shapes, which have no orientation, so position becomes well-defined again. (Position is the axis that dissolves same-shape/opposite-label position contradictions, e.g. a top-left dot vs a top-right dot.)
+
+Each axis is earned by a specific pair of shapes that collide on all prior axes: symmetry isolates the round shapes; connectivity separates a connected shape from a split blob of equal mass; mass separates a shape from a heavier look-alike; position separates two otherwise-identical placements. The chain is the extension point — add an axis only where a collision demands it, and only invariant under the axes already present.
+
+Reading the columns as cell-graph topology
+
+The Signature's two packed components are not arbitrary — together they describe the shape as a graph: each filled cell is a node, each orthogonal contact an edge. Then:
+
+- mass = V — the number of nodes (cells).
+- connectivity = E — the number of edges (orthogonal links).
+- span = the bounding box — how far the graph reaches (a structural property, not a routing column): the bounding box touches all four of its own borders, so the shape crosses it in both directions. When the box equals the full grid it reaches every edge of the ambient box — a candidate for a path all the way across.
+
+The combination that reads as "is it a path" is V − E:
+
+ relation  topology 
+ E = V − 1  one connected component, no loop — a tree / path across the box 
+ E < V − 1  fragments — disconnected pieces, no path between them 
+ E > V − 1  a cycle / loop or a thick region — more than a path 
+
+So a genuine path across the full box is span = full grid and E = V − 1 (spans, connected, one route). The span says does it reach across, V says how long, E says how connected — and V − E is the dial between fragments, path, and loop. V and E are the routing info (packed into the Signature column); span is structural.
+
+The honest caveat: with only V and E in the key this is the unoriented graph — no start, end, or direction, and no degree — so E = V − 1 only certifies tree (connected, acyclic, spanning), not simple path. The T is the giveaway: a tree of V=4, E=3, but its centre cell has degree 3, so it is a spanning tree with a fork, not a path. The rigorous discriminator is maximum degree Δ: a tree is a simple path iff Δ ≤ 2, and any Δ ≥ 3 is a branch. That coordinate now exists as the opt-in MaxDegree invariant (Δ(G) = max_v deg(v), a graph-automorphism invariant and so D4-legal) — the implemented form of the very axis the collision diagnostic blueprints on a path-vs-fork collision (§3, automated invariant discovery). It is held out of the default chain by minimality (the T-orbit reference datasets do not earn it; separable-path-fork is the dataset built to, where the diagnostic emits its blueprint), but once added it closes the gap in both directions: routing then separates a line from a fork of equal (V, E), and because Fiber filters candidates by the full descriptor, a degree-3 fork can no longer appear as a false positive in a path context's fiber.
+
+Minimality
+
+The chain is minimal: one Signature drives the exact-memory exceptions down to the irreducible floor — the genuine twins — and richer invariants (components, max-degree) resolve no further collision on the T-orbit reference datasets, so adding them there would be dead weight (the separable-path-fork dataset is the deliberate exception — a path-vs-fork collision that does earn max-degree). Two axes are therefore implemented but held opt-in: Position (radial-only) earns its place on radial-position contradictions (the corner-dot case), and MaxDegree (Δ, all shapes) earns its place on a path-vs-fork collision — the rigorous fix for the V − E path reading (above). Minimality is per dataset: the optimal chain is the smallest set of group-invariants that reaches the twin floor for the data at hand, so an opt-in axis is added exactly when a collision earns it (and the diagnostic, §3, says which). Lowering the floor itself is impossible (§10.4).
+
+Automated invariant discovery — the collision diagnostic
+
+The chain grows by hand, but which axis to add is now discovered automatically. As a training post-pass, the collision diagnostic (org.tervel.plexus.diagnostics) examines every context with non-zero entropy (both labels present) and asks whether the collision is reducible:
+
+- Provable symmetry-twin — the positive and negative grids share an orbit (equal canonical Shape). No group-invariant can separate orbit-mates (§10.4), so it is the irreducible floor and is left to the exact exception store.
+- Separable — the positive and negative labels live in disjoint orbits, so some group-invariant differs across the split. The diagnostic sweeps a battery of universal topological primitives — max-degree (Δ), components-b0 (b₀ = C), cycle-rank-b1 (b₁ = E − V + C), spectral-radius (λ₁ of the adjacency matrix), all graph-isomorphism invariants and hence D4-legal — and isolates the one that maximises information gain across the colliding labels. It emits that primitive's formal mathematical specification as the exact blueprint for the next manual Invariant, and runs Fiber to confirm the primitive discriminates the whole descriptor-fiber, not just the trained sample.
+
+The discovery is automated up to the invariance contract (only group-invariant primitives are in the battery); the implementation of the chosen axis as an Invariant is still manual design work. On the reference T-datasets the diagnostic reports every collision as an irreducible twin (the floor is already reached, confirming minimality); on a dataset where two equal-(V,E), equal-stabilizer shapes of different branching collide, it emits the max-degree blueprint with an exact split.
+
+4. The composite key
+
+The descriptor is one resolution, with no fixed key budget. The symmetry verdict is not a column inside the tuple — it is the type of the key. The root router branches on it once, into two strongly-typed tracks, each carrying only the coordinates that apply to it:
+
+Key is a sealed interface permits RadialKey, OrientedKey; each is a record, so value equality (record + List.equals) still makes it a Map key. Crucially, the two tracks are decoupled into two context tables (Map<RadialKey,Context>, Map<OrientedKey,Context>); contextFor dispatches a key to its table by a compile-time switch over the permits, never mixing the two coordinate layouts. This is what keeps each coordinate table perfectly uniform within its track — the radial-only Position column can no longer hang ragged off an oriented key, because oriented keys are a different type with no such field. The default chain is a single [Signature] — mass and connectivity packed into one invariant column, which hits the exception floor on every dataset except the corner-dot set, where the lone radial-position contradiction costs one extra memorized exception. Position is an opt-in axis (radial-only); add it for datasets with dot-position contradictions. Two shapes route to the same context iff they are the same track and agree on every applicable axis. (Reports read keys through the shared radial() / symmetry() / coords() accessors, so the whole-table walk is unchanged; symmetry() is 0 on the radial track, which has no orientation.)
+
+5. The context: majority + exact exceptions
+
+A Context (bucket) is the leaf, and it owns its own decision:
+
+- accept counts each example into its context.
+- score routes to the context, then delegates the leaf decision to the injected ResidualResolver (below). The default returns the context's majority answer, flipped iff the grid is a memorised exception.
+- A context with no positive majority is a reject; an unseen key defaults to 0.
+
+The exception store is the irreducible pixel-level memory for symmetry-twin contradictions — shapes that share every symmetry-derived quantity with an oppositely-labelled shape (provably irreducible: no symmetry feature can separate them). It memorises only those, so the contradiction count equals the number of genuine twins and nothing more. A genuine twin is a different grid and is never in the store, so it can never be over-flipped — the exact match is robust by construction.
+
+Sealing is a post-pass
+
+Exceptions are sealed after all counts are in. An exception is a grid whose label contradicts its context's converged majority; it cannot be detected online (a grid fed while counts are immature would be falsely flagged, a real exception fed early would be missed). So fit(grids, labels) takes the dataset once and runs two internal passes — count, then seal.
+
+The residual boundary: where routing ends and you brute-force or learn
+
+Routing is exact and deterministic up to the twin floor (§10.4) — symmetry plus the invariant chain place every grid in a context by pure structure. But two symmetry-twins share every group-derived quantity by proof, so the group algebra has nothing left to say about which one is which. That is the residual: the incompressible signal outside the symmetry algebra (§11, "entropy = log  fiber  "). This marks the exact theoretical line where structural routing reverts to memorisation — and resolving the residual is no longer routing, it is whatever you bring to bear (an exact lookup, a brute-force search, a learned net).
+
+The code makes that line a seam. A Plexus routes a grid to its Context — the most structure can do — then delegates the intra-context leaf decision to a ResidualResolver (org.tervel.plexus.residual). The resolver is injected at construction, a peer of the symmetry group and the invariant chain — Main constructs all three and passes them in (new Plexus(group, invariants, resolver)); there is no hidden default. The one that ships is ExactExceptions, the deterministic floor described above: majority, flipped iff the grid is a memorised exception — exact on seen contradictions, never over-flips. A resolver only ever decides within one already-routed context, reached only after structure is exhausted, so it can never corrupt the deterministic routing — only fill the part the routing provably cannot. Injecting a brute-force or learned resolver instead (one that predicts the residual rather than memorising it, generalising to unseen twins) changes nothing structural; it only replaces this one leaf function.
+
+6. The Searcher: the descriptor run backwards
+
+The descriptor is a map D : grids → keys. Classification runs it forward; the Searcher runs the symmetry direction backward. Given an input grid and a target, it sweeps the group and yields the transforms whose image the Plexus classifies as target:
+
+The group is the search space. It reads out an input's symmetry structure directly:
+
+- target = 1 on an exception → its broken symmetries (transforms that turn it into a genuine, positively-classified grid),
+- target = 0 → its surviving symmetries (under which it stays the exception).
+
+For a flipped orbit-member it returns the broken transforms (those that map it onto a genuine positive) against the surviving ones (under which it stays the exception) — the broken/surviving partition, in the object's own frame.
+
+The fibration: classify and generate
+
+D : grids → keys is a fibration. Classification runs it forward; generation samples its fibers D⁻¹(key). A trie node is a generator of its members — defined by the constraint conjunction (stabilizer ∩ mass ∩ connectivity ∩ position), not by a stored list, so the fiber includes members never trained on. The label splits the fiber: majority members vs the exception twins.
+
+A shape as itself, and the two fibrations (Shape)
+
+There are two inverse problems here, and keeping them apart is what makes the dots behave:
+
+- D : grid → key — the classifier's descriptor (symmetry verdict + invariant coords).
+- Shape.of : grid → shape — the geometric identity. It crops to the smallest bounding rectangle (translation quotiented away), folds to the group-canonical pose (orientation quotiented away), and tags the result with its isotropy fraction  Stab  /  G  — the relative size of the fundamental domain the shape folds into. By orbit–stabilizer that fraction is exactly 1/  orbit  : 1/8 for a shape with no symmetry (the generic "one octant" floor under D4), 1/4 for a single mirror, 1 for full symmetry. ("Isotropy" is the group-theoretic name for the stabilizer; the fraction is the dimension-free generalization of "which octant" — nothing in it is tied to 8 or to 2D.)
+
+A Shape is a complete frame-free symmetry-address: (cells, height, width) say what it is up to symmetry, isotropy says how symmetric it is. Both are orbit-invariants.
+
+Enumerating the descriptor-fiber in the bounding-box frame (Fiber)
+
+new Fiber(key, side).apply(plexus) inverts the descriptor: every side×side grid that routes to this exact node — D(g) == key. It unpacks the mass from the key's Signature coordinate (Signature.massOf; no example grid needed, so it works for pure contexts), enumerates in the bounding-box frame, and keeps only candidates whose descriptor equals the key. The fiber factors:
+
+The shape-fiber (Shape.of⁻¹, a shape's geometric instances) is the conceptual sibling below; only the descriptor-fiber is wired as an operation (Fiber). Shape.of is used forward — for a shape's identity and isotropy. A shape-fiber enumeration would be the geometric union over positions; build it only if an "all instances of this shape, any position" operation is actually needed.
+
+- bbox-patterns — tight h×w patterns of the key's mass that touch all four borders (box exactly h×w, no empty margin). The box isn't a key column, so it tries every box shape bh×bw and lets the descriptor filter cut the wrong ones; the tight-pattern count for a fixed mass is small and grid-size-independent.
+- translate-place — slide each tight pattern over the grid's (side-h+1)·(side-w+1) box positions. The only factor grid size enters — cheap and multiplicative.
+- match-descriptor — keep a placed candidate iff D(candidate) == key, enforcing the residual stabilizer / connectivity / position constraints. Tightness generates each member once.
+
+The win is structural: the expensive factor (box patterns) does not depend on side — a 2×3 tetromino is a handful of patterns whether the grid is 3×3 or 50×50; grid size survives only as the placement count. The result is exact by construction — every member shares the key's mass and box, so both box orientations over all placements cover the whole fiber and the descriptor filter admits nothing else.
+
+How the two fibrations relate
+
+For an oriented shape, its geometric fiber coincides with a single descriptor context — the orbit is the context (the T: 8 instances, one key). For a radial shape the descriptor keys on position, so it splits the shape across contexts: the dot is one fully-symmetric shape (isotropy 1/1, one canonical 1×1 pose) whose geometric fiber is all 9 placements, which the descriptor partitions into corner/edge/centre keys. So the shape-fiber would be the union of descriptor-contexts over the shape's positions — coarser than D⁻¹ exactly where, and only where, an invariant is position-sensitive. This is why the two are kept distinct conceptually even though only D⁻¹ is wired: a future "all instances of this shape" operation would be the geometric union, not a single context.
+
+This is the realisation of "do the reference-frame work once": translation is factored out by cropping to the box (its canonical representative), the box shape reads out the symmetry ceiling, the canonical pose folds the orbit, and isotropy records what the fold discarded.
+
+A word on "generate"
+
+Generate is the name of a direction (the classify/generate duality of principle 5), not of the operation. What Fiber actually does is enumerate / invert a fiber — exact, exhaustive, deterministic constraint solving, not sampling. So: "generate" for the duality; "enumerate the fiber" / "invert the fibration" for the mechanism. And since there are two fibrations, name which one — the shape-fiber (Shape.of⁻¹, conceptual) or the descriptor-fiber (D⁻¹, the wired Fiber).
+
+7. Operations and packages
+
+Operation<T> extends Function<Plexus, T> is the spine: a unary function consuming a Plexus. Reports are Operation<String> (Report); the two inverse directions are both Operations — the Searcher is Operation<Iterator<Transform>>, the Fiber is Operation<Stream<int[]>>.
+
+Each menu operation is a first-class Report, and most are consumers of one automaton. They sort onto the same two axes as the menu (§8) — the classify/generate direction × the node/table scope:
+
+- Resolve → / the whole table: ScoreReport judges the whole router (confusion / MCC).
+- Generate ← / the whole table: Topology walks the key trie and hands each (symmetry-break, context) node to an injected consumer, so TopologyReport (print counts) and PossibilityReport (enumerate + label each node's descriptor-fiber) are node-functions over the same walk. CollisionDiagnostic (find separable collisions, emit invariant blueprints) is the same scope but stands apart from the walk: it needs per-grid labels, which a context's counts don't carry, so it regroups the labelled examples by descriptor directly.
+- Generate ← / a node: SliceReport filters that walk to a partial key — by invariant or by label; Decompose factors a single shape into its atoms (the decomposition direction, §9), and Scale block-decimates a single grid into a coarser one (the change-of-scale direction, §11) — its sibling fold.
+- Resolve → / a node: StabilizerQuery poses a shape and lists its sibling breaks, or solves a stabilizer from a label; GridQuery resolves one exact placement.
+
+The two inverse directions live apart as the operations behind the headline cells: Searcher is the symmetry sweep (broken/surviving), Fiber is the descriptor-fiber enumeration.
+
+The split: symmetry is the principled, group-theoretic core; invariants are swappable heuristics whose only obligation is the invariance contract; the residual resolver owns what structure can't decide; the context owns its majority; the Plexus only routes. Main constructs (group, invariants, resolver, data) separately, so a dataset is loaded once and different invariant chains — or residual policies — tried on it.
+
+8. The interpreter
+
+Main <data-file> loads the dataset (path from the argument), infers the grid side from the data, trains, and drops into a REPL:
+
+The menu is laid out on the two axes the descriptor itself has — not a flat list:
+
+- Rows — the classify/generate duality (§10.5, the Feynman two-directions of one map). Resolve runs the map forward: route an input and read its verdict (by grid and by stabilizer read a label / a survive-vs-break partition; score reads the whole router's verdict). Generate runs it backward: pin coordinates and enumerate what lives there (by invariant / by label enumerate the matching contexts; topology / possibility / diagnose enumerate over the whole table; the node folds atoms and scale invert a single object — the decomposition and change-of-scale directions of the same §9 fold).
+- Columns — the scope (§10.7). A node fixes a partial (or full) key; the whole table ranges over every context. topology is the corner where the two meet — the whole-table image of the by-key queries, i.e. the empty partial key.
+
+So the headline by stabilizer query sits in the resolve/node cell as the sum-over-paths readout (allowed vs forbidden moves), and topology sits in the generate/table cell as "pin nothing, enumerate everything." Reading down a column or across a row is reading the same descriptor one axis at a time. The descriptor is a table whose columns are the symmetry verdict plus one per invariant — with the default chain that is a single sig column (the Signature packing mass and connectivity; the bounding box is not a column, §3), and quadrant only when Position is added for radial shapes. A query pins some columns and the node-consumer reads what's there. The entries below are grouped by the same two cells as the grid, not by number:
+
+Resolve → (run the map forward, read a verdict)
+
+A node — pin a key, read its answer:
+
+- [1] by stabilizer — the headline path. Every readout is framed as a sum-over-paths (Feynman): each move is a possible path, the moves that keep the input's label are the allowed paths (stay the target), the rest are forbidden (the label dies), and the solved group / position-class is the history class the input sums over. It has three modes (StabilizerQuery):
+
+    - Posed — specify a canonical shape + allowed symmetries. The allowed symmetries do double duty: they name the stabilizer to query under and orient the canonical shape (a canonical T + mirrorV = the vertically-standing T). That pins two of the three dimensions (symmetry and shape/break); the consumer answers the single-axis terminal question on the third — does each symmetry survive or break the label? (the Searcher sweep) — and lists the sibling breaks under that stabilizer.
+    - Solve — oriented shapes — leave the symmetries blank, give a label; the stabilizer is solved from the label on the D4 subgroup lattice. The orbit is swept against the raw dataset labels (not the Plexus's majority verdict, which would hide the planted contradictions) and split into surviving (image keeps the label), broken (image flips it), and unseen (never in data). gather climbs to the largest label-pure subgroup (the version-space general boundary — maximal recall); separate drops to the shape's own geometric stabilizer (the specific boundary). The gather search is exhaustive, not greedy, because a set of label-pure transforms need not be closed (two surviving mirrors can compose to a broken rotation). When the full surviving set is not itself a subgroup, gather does not keep it as a loose set of generators — that would be an invalid fold; instead it returns the largest subgroup wholly contained in the surviving set (the largest closed subset over all 2^  G  subsets that lie inside the surviving mask and contain the identity). Recall is therefore capped at the biggest valid fold the labels permit, and in the worst case — no non-trivial surviving transform composes back inside the set — it floors at the trivial group {e} (identity alone, always a subgroup). The fold group is reported directly with no pose step — a label-fold group need not be any orientation's geometric stabilizer (the all-1 T-orbit folds under full D4, which no T pose fixes), and the broken set is exactly where a contradiction caps the climb.
+    - Solve — radial shapes (the circular group — dots, plus) — a radial shape has no orientation, so symmetry says nothing and the routing knob is Position: the centre-of-mass quadrant, one of nine (the 3×3 coarse grid top-left … centre … bottom-right). Solve walks the position lattice instead of the subgroup lattice, by exact placement:
+
+        1. Sweep. Crop the shape to its bounding-box patch h×w and slide it over every placement in the frame — top ∈ [0, side−h], left ∈ [0, side−w] — embedding each into a full grid.
+        2. Label by quadrant. Read each placement's raw dataset label keyed by exact placement (not the Plexus: with no Position in the default chain the router folds all placements into one radial context — the collapse this branch exists to undo — so it goes to ground truth), and aggregate the observed labels into that placement's centre-of-mass quadrant.
+        3. Split. A quadrant is an allowed path (survives) iff every label observed in it is the wanted label (its label-set is exactly {label}); a quadrant carrying any other label is forbidden (the position dies); a quadrant no labelled placement ever lands in is unseen and dropped.
+
+      Terminal conditions (the position analogue of gather/separate — the two boundaries of the version space):
+        - gather (general boundary, maximal recall) — the union of all label-pure quadrants: the geometric shape-fiber, i.e. recall the shape at every position that keeps the label. Reported as "sums over N allowed position(s) as one history."
+        - separate (specific boundary) — pin to the seed quadrant, the single quadrant the centred input itself occupies (Position of the centred shape).
+
+      This is where the dot-position contradictions live: on position-corner-dot-3x3, gather on label 1 returns exactly top-left.
+
+    Blank symmetries and blank label default to the shape's own stabilizer.
+- [4] by grid — the exact typed placement, verbatim (no centering, no posing). Where [1] canonicalizes a frame-free shape, this preserves translation, so it can address a specific placed grid — in particular a planted contradiction, which lives at a translation the centered pose can't reach. Resolves the label and the surviving/broken verdict; for an exception the broken set is exactly the transforms carrying it onto a genuine, oppositely-labelled grid. (GridQuery)
+
+The whole table — judge every context forward:
+
+- [5] score — confusion / accuracy / MCC. (ScoreReport)
+
+Generate ← (run the map backward, enumerate what lives there)
+
+A node — pin a partial key, enumerate the matching contexts:
+
+- [2] by invariant — pin one break column by its name() (sig=167, or quadrant=0 when Position is in the chain); list the matching contexts. Mass and connectivity are packed inside sig, so they are queried through it, not as separate columns. (SliceReport)
+- [3] by label — pin the answer (1=TARGET / 0=reject); list the matching contexts. (SliceReport)
+- [9] atoms — factor a typed shape into atoms (§9): cut its cell-graph into strands at the junctions under a chosen cut-law (straight = bars, bent = Ls), fold congruent strands into a dictionary of distinct canonical shapes, and report each atom's isotropy and the shape's stabilizer. Unlike [2]/[3] it doesn't slice the context table — it inverts a single shape into its parts (the decomposition direction, the sibling of [7]'s fiber enumeration). The T yields bar + dot under straight, L + dot under bent. (Decompose)
+- [s] scale — coarse-grain a typed grid by k×k block-decimation (§11, the change-of-scale knob): fold each block to its canonical pose, keep one coarse bit, and read off what the fold discarded —  orbit  microstates per block, Σ log  orbit  integrated out. It is the same §9 fold as [9] atoms, sat one cell over in the same generate/node row: atoms cut one shape into finer parts, scale folds one grid into a coarser grid — both invert a single object rather than slicing the context table. So it rides the menu's two existing axes as a node fold, while conceptually being the third knob of §11 (conservation / relativity / scale). The two-scale renormalization loop that runs the flow over it is built separately as RenormalizationLoopRunner (§11). (Scale)
+
+The whole table — enumerate over every context:
+
+- [6] topology — the full table via the Topology automaton (the empty partial key — pin nothing): contexts grouped by symmetry then coordinates, with imbalance, exception count, broken symmetries. (TopologyReport)
+- [7] possibility — for every node, enumerate the descriptor-fiber (all grids that route there, incl. unseen) and split by predicted label; seen vs fiber exposes what training never covered. (PossibilityReport)
+- [8] diagnose — the collision diagnostic (§3): for every entropy>0 context, classify the collision as an irreducible symmetry-twin or a separable one, and for the separable ones emit the information-gain-maximising topological primitive as the blueprint for the next invariant. Also runs automatically as a training post-pass. (CollisionDiagnostic)
+
+The generate/node entries [2]/[3] and the headline [1] are all partial keys into the same context table — by symmetry, by an invariant column, by label — so topology (generate/table) is just the empty partial key. The {stabilizer, break} distinction dissolves into "which columns you pin"; the resolve/generate row is which way you read them.
+
+TODO — slices are over seen contexts. The query slices walk the Topology automaton, which iterates the contexts training populated. When the data covers the whole space that is every valid context; on partial data — including the shipped minimal datasets (§0), which carry only positives plus the colliding negatives — breaks/contexts never seen are missed. Generating them (the coarse stabilizer-fiber, or Fiber per partial key) would close the gap, mirroring the seen < fiber gap possibility already surfaces.
+
+9. Decomposition: the stabilizer as the optimal factorization
+
+Routing folds a shape onto its fundamental domain (§2); decomposition is the same fold read the other way — what are the irreducible pieces, and how do they reassemble? The thesis of this section is that the answer is not a free parameter: a shape's own stabilizer dictates the optimal split.
+
+The stabilizer acts on the parts
+
+A shape's stabilizer Stab — the symmetries it does not break (canonicalStabilizer, §2) — is usually read as a label (how symmetric the shape is). But it is also an operator on the shape's own cells: it permutes them. Decomposition is just reading off that action.
+
+The optimal decomposition is the orbit partition of the shape under its own stabilizer. Store one representative per orbit; the elements of Stab replay the rest.
+
+That is exactly the §2 fundamental-domain fold: the atom is the seed in the fundamental domain, Stab is the machine that unfolds it.
+
+Acting on the cells, Stab sorts them into two roles:
+
+- fixed points — cells on a symmetry axis, mapped to themselves: the junction / dot pieces, stored as-is (nothing to regenerate).
+- free orbits — cells swapped among each other: the repeated pieces (bars, arms), stored once with Stab producing the copies.
+
+So even the seams are the stabilizer talking: they fall between its fixed locus and its free orbits.
+
+Worked example — the T and its decompositions
+
+The T-tetromino is the clean case. Its canonical stabilizer is a single mirror through the centre column (  Stab  = 2, isotropy  Stab  /  G  = 2/8 = 1/4, orbit size 4). Watch that mirror act on the four cells:
+
+The same shape admits a lattice of decompositions; the stabilizer is what ranks them:
+
+ decomposition  pieces  description cost  verdict 
+ whole T (no split)  {T}  the whole shape, no reuse  trivially coarse — nothing folded 
+ all mass pieces  {dot, dot, dot, dot}  trivial atoms, but the assembly map carries the entire shape  trivially fine — the structure you dissolved reappears as gluing bits 
+ structural cut (bar/dot, §3 degree)  {bar "xxx", dot centre, bar "x" stem}  three atoms, junction named  irreducible structurally, but blind to the mirror 
+ stabilizer fold (optimal)  {arm, centre, stem} + "apply the mirror"  one arm stored; the mirror regenerates the other  the minimal dictionary — the orbit partition 
+
+Reading the rows: the two extremes are both bad, and for the same reason expressed two ways. All mass pieces throws the stabilizer away — every relation it would have given for free ("these two arms are one atom") must be re-encoded by hand in the assembly map, so you pay in gluing exactly what Stab was offering. The whole T leaves Stab nothing to act on. The right split is the only one that lets the stabilizer do its job: as many pieces as Stab has orbits, no more, no fewer.
+
+How you arrive there:  Stab  is the compression ratio
+
+This isn't an aesthetic choice — it is the minimum-description-length optimum (the codec reading of §11), and the stabilizer is the leading term. The dictionary size is parts / Stab-orbits, and the bits a surviving symmetry saves on a part are log₂  its orbit  = log₂(  Stab  /  Stab_part  ). So the bigger the unbroken stabilizer, the larger the orbits, the fewer distinct atoms, and Shape.isotropy =  Stab  /  G  — already computed on every shape — is that compression ratio:
+
+The fully-symmetric plus pays for one arm; the asymmetric L pays for all of itself — and the gap is precisely log  Stab  . You don't search blindly for the optimum: canonicalStabilizer hands it to you, so the optimal split is a readout of a quantity the router already computes.
+
+What the stabilizer does not fix
+
+One thing it leaves open: how finely to describe the single stored seed inside the fundamental domain. Is the seed a bar, an L, or a dot? That is the cut-law (the degree/curvature choice of §3 — cut at branch points only, or also at corners), and it is orthogonal: the stabilizer sets what is stored once versus regenerated; the cut-law sets how the one stored representative is itself written. The optimal decomposition is the composition of the two — structural cut, then stabilizer quotient — and only the second half is determined by symmetry. This is the same division of labour as the rest of the system: the group is the principled core, the structural invariants are the swappable refiners (§7).
+
+The operation
+
+new Decompose(grid, law).apply(plexus) (org.tervel.plexus.ops.Decompose, a sibling of Searcher and Fiber) runs this as the decomposition direction of the fibration. It walks the cell-graph from each endpoint, cutting into strands at the junctions, then folds congruent strands into a dictionary of distinct canonical Shapes with multiplicities — that fold is the §9 orbit collapse, and each entry carries its isotropy, so the dictionary size is the compression the stabilizer buys.
+
+The bar-vs-L choice is the one parameter, a CutLaw (§3): STRAIGHT ends a strand at a corner (atoms are bars), BENT carries it through bends (atoms are Ls / paths). On the T:
+
+The stabilizer is reported alongside ([identity, mirrorV] for the T) as the assembly rule, and a maximally-symmetric shape like the plus folds its four arms into a single dictionary entry — the visible payoff of a larger  Stab  .
+
+What the cut-law really chooses: where the variance lives
+
+The cut-law is not a cosmetic choice between two pictures of the T — it decides where the shape's irregularity is stored, and the isotropy column is the tell:
+
+- STRAIGHT → bar xxx (isotropy 1/2) + dot (1/1): both atoms are symmetry-rich. A straight bar lies on a reflection axis and is fixed by a mirror; a dot is fixed by everything.
+- BENT → L .x/xx (isotropy 1/4) + dot: the L is symmetry-poor — the bend gives it a handedness, so most of the group moves it.
+
+So forcing strands straight forces every atom to be one of the maximally-symmetric primitives the group admits. But the shape's asymmetry does not vanish — the total irregularity is conserved across atoms + assembly (the codec accounting of §11). The cut-law only chooses which side of that sum carries it:
+
+- STRAIGHT keeps the atoms symmetric and expels the symmetry-breaking feature — the bend — into the assembly (the junction relation, the relative placement). The dictionary stays clean and reusable; the gluing carries the variance.
+- BENT absorbs that same bend into the atom (the L is the bend), leaving a trivial assembly. The variance moves into the dictionary.
+
+This is the same symmetry-core-vs-structural-refiner split the whole machine runs on (§7), surfacing in decomposition. STRAIGHT atoms are an orthogonal basis — few, axis-aligned, maximally reused across all shapes (bars and dots are everywhere), at the cost of a richer assembly to say how the symmetric parts bend together. BENT atoms are bespoke — expressive, shape-specific, barely reusable, but the shape is then a near-trivial pile of pieces. And it closes back onto the stabilizer thesis: STRAIGHT decomposes along the shape's surviving symmetries — every atom respects the mirror (the bar is symmetric about the axis, the stem sits on it) — so the cut never breaks a symmetry the shape still has, and the corner, the one place the structure departs from axis-alignment, is exactly what gets excised as the seam. BENT is willing to break that symmetry inside an atom in exchange for a smaller assembly. The dial, then, is: symmetric reusable atoms + informative gluing, or expressive one-off atoms + trivial gluing — same shape, same conserved total, different split.
+
+10. Principles
+
+1. Route, don't over-teach. Fundamentally different kinds of object (a plus, a T, a dot) belong in different contexts; one learner forced to separate them all just learns proxies.
+2. Each axis must be earned by a collision and invariant under the prior axes, or it undoes them. Position is the exception that proves the rule (radial-only).
+3. Keep the one degeneracy you want — rotation of a genuine shape — and break the rest. Telling them apart is the whole game.
+4. Symmetry-twins are irreducible by symmetry, by proof. When two shapes share every symmetry quantity, the only remaining signal is outside the symmetry algebra; exact identity memory, quotiented by the surviving symmetry, is the honest floor.
+5. Classify and generate are the two directions of one map. The descriptor is a fibration; a trie node is a router forward and a generator of its fiber backward.
+6. Do the reference-frame work once, and let the frame read out the symmetry. Crop to the bounding box (factor out translation, the transform that was never in the group), and the box shape is the stabilizer ceiling — a rectangle has already disabled the off-diagonal symmetries as self-symmetries, keeping them only as orbit generators across the transpose. Normalize once at the front; routing and generation both run in the small frame.
+7. The descriptor is a nested coordinate system — stabilizer ⊃ break ⊃ label — and each operation fixes one coordinate and enumerates the next. Fix a stabilizer, enumerate its breaks (by stabilizer). Fix a break, enumerate its grids (possibility / fiber). Fix the grid, and only the label remains (by grid). Every query is a partial key into the context table; topology is the empty key. Naming discipline: generate is the duality direction (principle 5); the operation is to enumerate / invert a fiber — say which one, the shape-fiber or the descriptor-fiber. The interpreter's menu (§8) is laid out on exactly these two axes — the classify/generate direction (principle 5) × the node/table scope (this principle) — so the UI mirrors the descriptor's own structure.
+
+11. Frames as physics (a reading)
+
+Why this section exists. It is not ornament, and it is not a claim to have built physics. It is a coherence argument — evidence that the Plexus is a sound way to analyze the world, not merely a classifier of one toy dataset. The argument runs by construction: nothing physical was ever put into the machine. It is a pure structural router — symmetry, a chain of invariants, an exact residual — with no equations of motion, no action, no Planck constant, no metric. Yet when a stream of grids is read as frames of an object over time, the scaffolding of physical law falls out unforced, piece for piece: conserved charges, entropy as the log of a fiber, least action as the intersection of slices, the sum over paths, the classical–quantum fold, the renormalization flow. A framework earns the right to be called a coherent ontology when the side-effects we already expect from how we observe the world re-appear as theorems of its own structure — when you recognize the world in it without having inserted the world by hand. That recurrence is the proof on offer here: the same slice-and-find-the-constant logic that routes a shape under D4 is the logic by which we read conservation, causality, and scale out of nature. The correspondences below are each one instance of that recognition.
+
+This remains an interpretive lens, not implemented mechanism (the caveat at the end says exactly what the code does and doesn't do) — but that honesty is what makes the argument carry weight: the parallels are exact enough to state plainly precisely because they were not engineered to fit.
+
+The correspondence
+
+ Plexus  physics 
+ invariant part of the descriptor (Shape: mass, connectivity, symmetry)  the macrostate / conserved quantities (what it is) 
+ cropped pose (translation, rotation)  the configuration coordinates where momentum / motion live (where it is) 
+ a slice (fix the coordinates naming a symmetry)  a conservation law; the slice you cut is the law (Noether) 
+ constant along the slice  a conserved quantity (constant of motion) 
+ the law = a state→next-state rule independent of when  time-translation invariance = energy conservation 
+ descriptor-fiber D⁻¹(key) (all grids with one macrostate)  the microstates; log\  fiber\  is the entropy 
+ the label (1/0) read at each step  the alive / halt bit — survival under the dynamics 
+ the irreducible symmetry-twins (exact-memory exceptions)  the built-in 0s — the death points no symmetry can argue away 
+ the context trie  the Turing tape quotiented by the symmetry group — content-addressed, not positional 
+
+Conservation = a constant along a slice
+
+A conserved quantity is a constant of motion: cut a slice, walk the frames, and whatever stays the same is conserved. The slice you choose is the law you find — cut along translation → momentum; along rotation → angular momentum; along time with a fixed rule → energy; along the invariant → mass / identity. "The same" lives at two orders: a scalar charge (mass, energy) is flat in value; a vector charge (momentum m·v) is flat in rate — the pose marches at a constant step. A bend in the flat quantity localizes a force. Caveat: the default descriptor is translation-invariant, so it folds momentum away — to read momentum you keep the pose (the [4] by grid slice) and watch the placement advance uniformly.
+
+Time is the cursor, not a category
+
+A law of physics is not a new category — it is the requirement that the state→next-state rule not depend on when (time-translation invariance), which is energy conservation. Time is the playback cursor you iterate the rule along, not an axis you route on. Make time a category and you get a flipbook, not laws.
+
+The law is a compression
+
+A lawful trajectory needs only (initial frame + rule); the rest regenerate by iterating — that's compression. The descriptor does spatial compression (crop the position → fold the orbit to one code), the law does temporal compression (one rule instead of every frame). Like a video codec: conserved quantities are the compressible skeleton (stored once), entropy is the incompressible residual, and a force is a keyframe — the surprise the predictor couldn't fold. A lawful universe is a compressible one; finding the laws is finding the best compression (Kolmogorov / minimum description length).
+
+Entropy = log of the fiber
+
+The descriptor is the macrostate; its fiber D⁻¹(key) is the set of microstates that share it; so entropy = log\  fiber\  — and the possibility report [7] literally counts it. Conservation enables entropy rather than opposing it: a conserving (volume-preserving, Liouville) flow cannot shrink the cloud of states, so it can only spread and mix until it fills the surface the invariants allow — maximum entropy = the largest fiber. This finally supplies the arrow: conservation draws a reversible rail; entropy sets the direction along it (overwhelmingly toward bigger fibers, simply because there are more of them). Conservation says where you can go; entropy says which way you almost certainly will.
+
+Least action = thread the intersection
+
+Each conserved quantity confines the trajectory to its slice; conserve several and you are pinned to their intersection — a thin residual channel, and time is motion along that channel. Free motion conserves the most → the full intersection → a straight line, the geodesic. A force looks like broken conservation but for the closed system (object + field) everything is still conserved — the charge merely flows between subsystems. The precise selector is extremize the action; "most conserved" is the exact intuition for the free/closed case.
+
+Sum over paths (Feynman)
+
+Least action picks the one extremal trajectory; the path-integral keeps all of them and sums. The machine has the discrete version already: sweep the group, and each move is a possible path. The moves under which the input keeps its label are the allowed paths (it stays on its orbit); the rest are forbidden (the label dies). The set of allowed paths is the input's stabilizer — so the stabilizer is the bundle of histories that keep the input itself, and "summing over paths" is summing over that orbit. A judgement on the input is therefore a judgement on its stabilizer: a large stabilizer = many allowed paths = a long-lived history; the first forbidden move names the symmetry it lacks. The [1] by stabilizer query is exactly this readout — allowed vs forbidden paths, and the history class they sum over. Honest seam: the moves are spatial transforms, so these are symmetry paths, not the time-paths a true action integral sums (the time-drive is unbuilt, per the caveat).
+
+Classical ↔ quantum (orbit vs representative)
+
+Classical and quantum are then the same bundle read two ways. The bundle is the orbit — what the stabilizer names (above). Classical collapses it to its canonical representative (least action keeps the one stationary path); that collapse is exactly the fold to the canonical stabilizer (§9), and stationary phase (ħ→0) is what performs it. Quantum keeps the whole bundle and lets its elements interfere (sum over paths with phase e^{iS/ħ}). So the correspondence principle is the orbit-fold, and isotropy =  Stab  /  G  measures how much bundle collapses to a point. The Plexus is the classical shadow: it keeps the orbit as a set (a charge/partition), not a phased sum — no phase, no interference. Quantizing it is therefore one named, unbuilt move: attach a phase to each orbit element and sum amplitudes instead of partitioning allowed/forbidden. These are orthogonal knobs on the one frame-bundle: conservation fixes a coordinate, relativity chooses the foliation, classical↔quantum chooses whether to fold the bundle or keep it interfering — and only the last is already half-built (the machine does the fold).
+
+TODO — phase-sum quantization, and the twin as a conjugate charge. Attaching a phase e^{iS/ħ} to each orbit element and summing amplitudes is the one named, unbuilt move from the classical shadow to the quantum. It is also where the symmetry-twin (§5, §10.4) earns a physical reading: a twin shares every group invariant with its oppositely-labelled partner and differs only in a discrete sign the algebra cannot derive — a Z₂ charge orthogonal to the geometry, stored by hand (the exact-exception floor), i.e. the classical, decohered residue of a particle–antiparticle pair. Three honest seams bound the analogy: the operation relating Plexus twins is a spatial D4 transform, so it reads as parity/chirality (P/CP) before charge-conjugation (C, an internal op); the majority/exception asymmetry has no electron/positron counterpart (it is closer to matter/antimatter abundance); and antiparticles originate in the very phase this machine drops. So phasing the orbit is exactly the move that would promote the twin shadow toward a genuine e/p pair — with the time-drive (the T of CPT, the Stückelberg "antiparticle = particle backward in time") as the other missing ingredient.
+
+The machine: drive + gate
+
+Split the Turing analogy in two. The law is the drive (the transition rule that advances the state); the label is the gate — 1 = advance / live, 0 = halt / die. So a configuration has a lifespan: how many steps the dynamics keep it landing in 1 before it falls onto a 0. The irreducible twins are the death points — the 0s the symmetry algebra provably can't smooth over. As it stands the machine is finite and read-only (always halts in fixed steps) — not Turing-complete; give it a write and unbounded memory and "how long does it live / will it halt" becomes genuinely undecidable.
+
+Relativity (the aspirational extension)
+
+Push it further and time becomes a foliation, not an index: each observer is a way of slicing the frames into "now" surfaces, and observers reshuffle the order of acausal (spacelike) frames while agreeing on the causal (timelike) ones — the law fixes the timelike skeleton, simultaneity is the slack. Conservation survives the shuffle because a constant is order-independent: the same charge sits on every observer's slice (the field-theory statement that a conserved charge is the same on every Cauchy surface). What transforms between observers is the split — a boost mixes energy and momentum as components of one object — while the invariant the slice measures is shared.
+
+The light cone from an ensemble of Plexuses
+
+The foliation need not be postulated — it can be derived from many routers. Take an ensemble of Plexuses as observers, each fed the same frame-stream but reordered by propagation delay (each event reaches each observer at a different time). Each observer's ordering is then one slicing of the frames; the observer is its delay profile.
+
+The physics is what they agree on. Some event-pairs get reordered between observers (whoever is closer sees one first); some pairs reorder for no observer. The orderings that survive every observer are the causal partial order, and its frontier — the boundary between "all observers agree before/after" and "observers disagree" — is the light cone. The cone is thus the invariant of the reshuffling, not a separate postulate drawn on top. The Plexus charges (the invariant descriptor — mass, connectivity, the symmetry verdict) are frame-content, not frame-order, so every shuffled observer agrees on them (the same charge on every "now"); only the pose is observer-dependent — the part a boost mixes.
+
+The one ingredient this does not give for free: a per-observer delay yields only a causal partial order, which could still be Galilean (a universal "now" recoverable by correcting for distance). To get the Lorentz cone — the same opening everywhere, time dilation, boosts — the propagation speed must be one invariant for all observers (c). That single constraint is what makes the distance-correction unshareable (the irreducible disagreement is the cone) and forces the transformations between observers to be boosts that mix the space and time axes rather than mere relabellings of arrival time. So: the ensemble gives the causal skeleton for free; making c an invariant of the ensemble (not a per-Plexus parameter) is the postulate that promotes it to a metric cone and pins the boost group.
+
+Change of scale (renormalization) — the half-built knob
+
+Alongside conservation (fix a coordinate) and relativity (choose the foliation), there is a third knob on the same frame-bundle: change of scale. Coarse-graining a grid — block-decimation, side → side/k — is the renormalization-group flow, and it is the same fold §9 already runs, applied per block instead of per strand: each k×k block collapses to one coarse cell, and the microstates it discards are log  orbit  bits, the degrees of freedom integrated out. Scale (org.tervel.plexus.ops) is that operation, the explicit sibling of Decompose: same orbit collapse, different unit. The block fold is the classical limit (§11, fold-to-representative); the unbuilt quantum move would keep those microstates with a phase and sum amplitudes — Scale only measures the discarded count (integratedEntropy), it does not sum it.
+
+The decimation must commute with the group (k  side, a centre-symmetric tiling, a D4-invariant per-block readout) — the analogue of a regulator that preserves the symmetry. This is where the quantum/classical conflict is meant to surface, via renormalizability: feed the coarse grid back to the collision diagnostic (§3) across two scales and watch whether the invariant chain closes (a finite fixed point — renormalizable: the classical fold and the quantum fiber reconcile) or whether each coarse step emits a new blueprint (unbounded counterterms — non-renormalizable: the classical fold has no finite quantum completion, and the diagnostic names the very primitive the fold failed to keep). The two-scale closure loop that runs this flow is built (RenormalizationLoopRunner): it synthesises a fine dataset, takes the fine-scale CollisionDiagnostic reading, folds the dataset with Scale, retrains a fresh Plexus at side/k, and reads the coarse diagnostic — then issues a three-way verdict framed in Plexus's own exception terms (the diagnostic exposes a structured analyze result for this). The quantities it compares are the blueprint (the set of Primitive names the diagnostic emits for separable collisions — the reducible counterterms a richer chain could absorb) and the floor (the count of provable-twin collisions — the irreducible exceptions that land permanently in the exact store):
+
+- renormalizable closure — the fold preserved the floor and demanded no new counterterm (a finite fixed-point chain across scales);
+- soft non-renormalizability — the floor held but the coarse scale demands a new reducible counterterm (renormalizable only with an enlarged chain);
+- hard shattering — the fold turned a separable distinction into a twin, minting new irreducible exceptions and raising the floor — information no invariant can recover.
+
+The shipped experiment is the path-vs-fork collider scaled to 9×9 (a T-tetromino fork and an L-tetromino path sharing (V=4, E=3) and a trivial canonical stabilizer, so they collide in one separable context with blueprint = {max-degree}, floor 0). Under the k = 3 fold each tetromino crushes to one or two coarse cells; the diagnostic reports hard shattering — the path/fork distinction collapses onto identical coarse canonical shapes, manufacturing irreducible twins. (A side ≥ 4 grid is required at all: the 3×3/5×5 reference sets are degenerate for k  side.)
+
+Still unbuilt: the phase-sum that would complete the quantum side. The loop measures the discarded integratedEntropy but does not sum amplitudes over it, so the conflict surfaces as the floor rising rather than as interference — the exact place the unbuilt phase-sum (§11, Classical ↔ quantum TODO) would attach.
+
+Caveat — what the code actually does
+
+This is a reading. The implementation has the spatial group (D4) and a plain frame index — no metric, no light cone, no foliation, no entropy dynamics, no write-back, and no ensemble of observers. Realising the relativistic extension would mean building the ensemble construction above: many routers fed delay-reordered frames, an invariant c shared across them (the postulate that turns the causal partial order into a Minkowski cone), and swapping D4 for a group that includes boosts (mixing the space and time axes). The encouraging part is that nothing in the slice-and-find-the-constant logic changes — the causal structure is just "what is fixed under the boosted group," the same stabilizer/orbit machinery that routes a shape under D4; you would only be cutting slices through a larger group.
