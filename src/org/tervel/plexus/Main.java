@@ -15,6 +15,7 @@ import org.tervel.plexus.reports.ScoreReport;
 import org.tervel.plexus.reports.SliceReport;
 import org.tervel.plexus.reports.StabilizerQuery;
 import org.tervel.plexus.reports.TopologyReport;
+import org.tervel.plexus.reports.VolumeReport;
 import org.tervel.plexus.symmetry.Dihedral;
 import org.tervel.plexus.symmetry.SymmetryGroup;
 
@@ -78,7 +79,7 @@ public class Main {
 
                                    a node                                  the whole table
                       resolve  ->  [1] stabilizer  [4] grid                [5] score
-                      generate <-  [2] invariant   [3] label  [9] atoms  [s] scale    [6] topology  [7] possibility  [8] diagnose
+                      generate <-  [2] invariant   [3] label  [9] atoms  [s] scale    [6] topology  [7] possibility  [v] volume  [8] diagnose
                       [q] quit""");
             System.out.print("> ");
             if (!in.hasNextLine()) return;
@@ -91,6 +92,7 @@ public class Main {
                 case "5" -> System.out.println(new ScoreReport(inputs, labels).apply(plexus));
                 case "6" -> System.out.println(new TopologyReport().apply(plexus));
                 case "7" -> System.out.println(new PossibilityReport(inputs).apply(plexus));
+                case "v" -> System.out.println(new VolumeReport(side).apply(plexus));
                 case "8" -> System.out.println(new CollisionDiagnostic(inputs, labels).apply(plexus));
                 case "9" -> queryDecompose(plexus, in, side);
                 case "s" -> queryScale(plexus, in, side);

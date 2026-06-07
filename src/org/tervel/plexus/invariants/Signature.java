@@ -1,5 +1,8 @@
 package org.tervel.plexus.invariants;
 
+import java.util.List;
+import java.util.function.ToIntFunction;
+
 /**
  * The shape signature: a {@link Mass} ({@code V}) and a {@link Connectivity} ({@code E}) coordinate
  * <b>composed into one injective column</b> — a composite invariant. They are bundled on purpose —
@@ -59,4 +62,11 @@ public final class Signature implements Invariant {
 
     @Override public boolean applies(boolean radial) { return mass.applies(radial) && connectivity.applies(radial); }
     @Override public String name() { return "sig"; }
+
+    /**
+     * Unpack into the two structural scalars the packing hides — {@code V} ({@link Mass}) and {@code E}
+     * ({@link Connectivity}). The packed value is for keying; the determinant/Jacobian volume differentiates
+     * these two clean, D4-invariant rows instead (see {@link Invariant#components()}).
+     */
+    @Override public List<ToIntFunction<int[]>> components() { return List.of(mass, connectivity); }
 }

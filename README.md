@@ -31,7 +31,7 @@ The REPL menu is a 2-D grid — classify/generate (rows) by node/whole-table (co
 ```
                  a node                                   the whole table
   resolve  ->  [1] stabilizer  [4] grid                   [5] score
-  generate <-  [2] invariant   [3] label  [9] atoms  [s] scale   [6] topology  [7] possibility  [8] diagnose
+  generate <-  [2] invariant   [3] label  [9] atoms  [s] scale   [6] topology  [7] possibility  [v] volume  [8] diagnose
   [q] quit
 ```
 

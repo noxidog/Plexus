@@ -2,6 +2,7 @@ package org.tervel.plexus.invariants;
 
 import org.tervel.plexus.symmetry.Transform;
 
+import java.util.List;
 import java.util.function.ToIntFunction;
 
 /**
@@ -29,6 +30,20 @@ public interface Invariant extends ToIntFunction<int[]> {
 
     /** Short label for reports, e.g. {@code "mass"}. */
     String name();
+
+    /**
+     * The <b>structural scalar components</b> this coordinate is built from — one entry per genuinely
+     * independent quantity, <em>unpacked</em>. A plain invariant is its own single component; a composite
+     * like {@link Signature} (which packs {@code V} and {@code E} into one injective column purely for
+     * keying) overrides this to expose the two parts separately.
+     *
+     * <p>This is the seam the <b>thread-volume = determinant</b> identity needs: the Jacobian/Gram volume
+     * differentiates these components, never the packed value. A finite difference of the {@code V·W + E}
+     * packing mixes the incommensurable {@code W}-unit (a cell) and {@code 1}-unit (an edge) onto one axis,
+     * so its gradient is meaningless; differentiating {@code V} and {@code E} as separate rows is the honest
+     * Jacobian. {@code Map}-key equality reads the packed column; the determinant reads these components.
+     */
+    default List<ToIntFunction<int[]>> components() { return List.of(this); }
 
     /**
      * The invariance contract, made executable. The coordinate must be unchanged by a routing

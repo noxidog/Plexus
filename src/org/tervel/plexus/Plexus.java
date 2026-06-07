@@ -219,4 +219,7 @@ public class Plexus implements BiConsumer<int[], Integer> {
 
     /** The symmetry group this Plexus routes by — the set of transforms operations sweep over. */
     public SymmetryGroup group() { return group; }
+
+    /** The injected invariant chain — the coordinate maps whose components the Jacobian volume differentiates. */
+    public List<Invariant> invariants() { return invariants; }
 }
