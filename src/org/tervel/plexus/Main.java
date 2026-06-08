@@ -38,19 +38,26 @@ public class Main {
             return;
         }
         final var data = parse(Path.of(args[0]));
-        final var group = Dihedral.d4();
-        final var side = data.isEmpty() ? 0 : (int) Math.round(Math.sqrt(data.get(0).grid().length));
-        // Compose mass (V) and connectivity (E) into one Signature column: both are D4-invariant (every
+        // Domain frame from the data's "nxm" header. A square domain (rows == cols) routes under the full
+        // square group D4; a rectangular domain breaks the transpose and routes under D2 (§11, "the
+        // rectangle"; org.tervel.plexus.symmetry.Crystallographic — order 2 still covers the plane).
+        final var rows = data.isEmpty() ? 0 : Integer.parseInt(Files.readAllLines(Path.of(args[0])).get(0).split("x")[0].trim());
+        final var cols = data.isEmpty() ? 0 : data.get(0).grid().length / Math.max(1, rows);
+        final var square = rows == cols;
+        final var group = square ? Dihedral.d4() : Dihedral.d2();
+        // Compose mass (V) and connectivity (E) into one Signature column: both are group-invariant (every
         // rigid transform preserves cell and adjacency counts), so each is a legal symmetry coordinate —
-        // but blind alone, so they're packed together. Opt-in axes (held out by minimality, §3): add
-        // new Position() (radial-only) for dot cases, or new MaxDegree() to separate a path from a fork
-        // of equal (V,E) — the rigorous "is it a path" axis the collision diagnostic blueprints.
-        final var invariants = List.<Invariant>of(new Signature(new Mass(), new Connectivity(), side));
+        // but blind alone, so they're packed together. Connectivity carries the frame so adjacency uses the
+        // true row stride; the Signature packing base just needs to exceed the max edge count, which
+        // width(rows + cols) does for any rectangle. Opt-in axes (held out by minimality, §3): add
+        // new Position() (radial-only) for dot cases, or new MaxDegree() to separate a path from a fork.
+        final var connectivity = square ? new Connectivity() : new Connectivity(rows, cols);
+        final var invariants = List.<Invariant>of(new Signature(new Mass(), connectivity, square ? rows : rows + cols));
         // The residual policy past the twin floor (§9.4): the deterministic exact-exception store. Swap in a
         // brute-force or learned ResidualResolver here to predict unseen twins instead of memorising them.
         final var resolver = new ExactExceptions();
 
-        final var plexus = train(group, invariants, resolver, data);
+        final var plexus = train(group, invariants, resolver, data, rows, cols);
         final var inputs = data.stream().map(Example::grid).toList();
         final var labels = data.stream().map(Example::label).toList();
 
@@ -60,9 +67,18 @@ public class Main {
         repl(plexus, inputs, labels);
     }
 
-    /** Trains a Plexus on the dataset under the given symmetry group, discriminator chain, and residual resolver. */
+    /** Trains a Plexus on the dataset (square domain — frame inferred per grid). */
     static Plexus train(SymmetryGroup group, List<Invariant> invariants, ResidualResolver resolver, List<Example> data) {
-        final var plexus = new Plexus(group, invariants, resolver);
+        return train(group, invariants, resolver, data, -1, -1);
+    }
+
+    /**
+     * Trains a Plexus on the dataset under the given group, chain, resolver, and explicit {@code rows×cols}
+     * domain frame ({@code rows, cols <= 0} = infer a square frame per grid).
+     */
+    static Plexus train(SymmetryGroup group, List<Invariant> invariants, ResidualResolver resolver,
+                        List<Example> data, int rows, int cols) {
+        final var plexus = new Plexus(group, invariants, resolver, rows, cols);
         plexus.fit(data.stream().map(Example::grid).toList(),
                    data.stream().map(Example::label).toList());
         return plexus;

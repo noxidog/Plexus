@@ -73,6 +73,15 @@ public class Plexus implements BiConsumer<int[], Integer> {
     private final List<Invariant> invariants;
 
     /**
+     * The domain frame. {@code rows, cols > 0} pin an explicit rectangular domain (non-square — paired with a
+     * D2 {@link SymmetryGroup}); {@code <= 0} means "infer a square frame per grid" ({@code sqrt(length)}),
+     * the historical default. The frame feeds the geometry of {@link #descriptor} (the canonical stabilizer
+     * and the radial test); it does not change the square path.
+     */
+    private final int rows;
+    private final int cols;
+
+    /**
      * The intra-context decision policy for the part structure cannot resolve — the residual past the twin
      * floor (§9.4). Routing is exact and deterministic up to the context; this resolver owns the leaf
      * decision inside it. It is injected (a peer of the group and chain): the deterministic
@@ -96,10 +105,27 @@ public class Plexus implements BiConsumer<int[], Integer> {
      * {@link ExactExceptions} is passed in explicitly rather than assumed here.
      */
     public Plexus(SymmetryGroup group, List<Invariant> invariants, ResidualResolver resolver) {
+        this(group, invariants, resolver, -1, -1);
+    }
+
+    /**
+     * Construct a router over an explicit {@code rows×cols} domain. For a square domain pass the
+     * three-argument constructor (or {@code rows == cols}); for a rectangular domain pass the two distinct
+     * dimensions and a D2 group ({@link org.tervel.plexus.symmetry.Dihedral#d2()}).
+     */
+    public Plexus(SymmetryGroup group, List<Invariant> invariants, ResidualResolver resolver, int rows, int cols) {
         this.group = group;
         this.invariants = List.copyOf(invariants);
         this.resolver = resolver;
+        this.rows = rows;
+        this.cols = cols;
     }
+
+    /** Row count of {@code g}'s frame — the pinned domain height, or the inferred square side. */
+    private int rows(int[] g) { return rows > 0 ? rows : (int) Math.round(Math.sqrt(g.length)); }
+
+    /** Column count of {@code g}'s frame — the pinned domain width (row stride), or the inferred square side. */
+    private int cols(int[] g) { return cols > 0 ? cols : (int) Math.round(Math.sqrt(g.length)); }
 
     // ---- Routing: resolve a shape to its context key ---------------------------------------
 
@@ -110,7 +136,7 @@ public class Plexus implements BiConsumer<int[], Integer> {
     public Key descriptor(int[] g) {
         final var radial = isRadial(g);
         final var coords = invariants.stream().filter(d -> d.applies(radial)).map(d -> d.applyAsInt(g)).toList();
-        return radial ? new RadialKey(coords) : new OrientedKey(group.canonicalStabilizer(g), coords);
+        return radial ? new RadialKey(coords) : new OrientedKey(group.canonicalStabilizer(g, rows(g), cols(g)), coords);
     }
 
     /** Dispatch a key to its track's context table; {@code create} computes an empty context if absent. */
@@ -123,34 +149,35 @@ public class Plexus implements BiConsumer<int[], Integer> {
 
     /** Verdict: a round shape (some rotation fixes its centred form) has no orientation. */
     private boolean isRadial(int[] g) {
-        final var b = Invariant.box(g);
+        final var b = Invariant.box(g, rows(g), cols(g));
         if (b[0] != b[1]) return false;                 // non-square box ⇒ rot90 transposes it ⇒ can't be radial
-        final var c = centered(g, (int) Math.round(Math.sqrt(g.length)));
-        return c != null && group.rotationFixes(c);
+        final var c = centered(g, rows(g), cols(g));
+        return c != null && group.rotationFixes(c, rows(g), cols(g));
     }
 
-    /** Translates the blob so its bounding box is centered on the grid; null if the grid is empty. */
-    private static int[] centered(int[] g, int side) {
-        int minR = side, maxR = -1, minC = side, maxC = -1;
+    /** Translates the blob so its bounding box is centered on a {@code rows×cols} grid; null if empty. */
+    private static int[] centered(int[] g, int rows, int cols) {
+        int minR = rows, maxR = -1, minC = cols, maxC = -1;
         for (var i = 0; i < g.length; i++) if (g[i] == 1) {
-            final int r = i / side, c = i % side;
+            final int r = i / cols, c = i % cols;
             minR = Math.min(minR, r); maxR = Math.max(maxR, r);
             minC = Math.min(minC, c); maxC = Math.max(maxC, c);
         }
         if (maxR < 0) return null;
-        final var offR = (side - 1 - (maxR - minR)) / 2 - minR;
-        final var offC = (side - 1 - (maxC - minC)) / 2 - minC;
+        final var offR = (rows - 1 - (maxR - minR)) / 2 - minR;
+        final var offC = (cols - 1 - (maxC - minC)) / 2 - minC;
         final var out = new int[g.length];
         for (var i = 0; i < g.length; i++) if (g[i] == 1) {
-            final int r = i / side + offR, c = i % side + offC;
-            if (r >= 0 && r < side && c >= 0 && c < side) out[r * side + c] = 1;
+            final int r = i / cols + offR, c = i % cols + offC;
+            if (r >= 0 && r < rows && c >= 0 && c < cols) out[r * cols + c] = 1;
         }
         return out;
     }
 
-    /** Public centering: translate the blob so its bounding box sits in the middle of the grid (null if empty). */
+    /** Public centering: translate the blob so its bounding box sits in the middle of a square grid (null if empty). */
     public static int[] center(int[] g) {
-        return centered(g, (int) Math.round(Math.sqrt(g.length)));
+        final var s = (int) Math.round(Math.sqrt(g.length));
+        return centered(g, s, s);
     }
 
     /** The applicable discriminator coordinates of a key, by name (e.g. {@code {sig:167}}, or {@code {sig:167, deg:2}}). */

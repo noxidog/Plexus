@@ -10,16 +10,22 @@ import java.util.List;
  */
 public final class Dihedral implements SymmetryGroup {
 
-    /** The 8 rigid transforms of a square, in canonical (bit-index) order. */
+    /**
+     * The 8 rigid transforms of a square, in canonical (bit-index) order. Each primitive is
+     * {@code (rows, cols)}-aware; on a square frame ({@code rows == cols}) it reduces to the historical
+     * single-side formula. The four <b>transposing</b> moves — {@code ROT90}, {@code ROT270},
+     * {@code DIAG_MAIN}, {@code DIAG_ANTI} — swap the axes and are valid only when {@code rows == cols}; the
+     * rectangular group {@link #d2()} excludes them.
+     */
     private enum Move implements Transform {
-        IDENTITY("identity", true)  { public int src(int r, int c, int s) { return r * s + c; } },
-        ROT90   ("rot90",    true)  { public int src(int r, int c, int s) { return (s - 1 - c) * s + r; } },
-        ROT180  ("rot180",   true)  { public int src(int r, int c, int s) { return (s - 1 - r) * s + (s - 1 - c); } },
-        ROT270  ("rot270",   true)  { public int src(int r, int c, int s) { return c * s + (s - 1 - r); } },
-        MIRROR_H("mirrorH",  false) { public int src(int r, int c, int s) { return (s - 1 - r) * s + c; } },
-        MIRROR_V("mirrorV",  false) { public int src(int r, int c, int s) { return r * s + (s - 1 - c); } },
-        DIAG_MAIN("diagMain", false){ public int src(int r, int c, int s) { return c * s + r; } },
-        DIAG_ANTI("diagAnti", false){ public int src(int r, int c, int s) { return (s - 1 - c) * s + (s - 1 - r); } };
+        IDENTITY ("identity", true)  { public int src(int r, int c, int rows, int cols) { return r * cols + c; } },
+        ROT90    ("rot90",    true)  { public int src(int r, int c, int rows, int cols) { return (rows - 1 - c) * cols + r; } },           // square-only (transposes)
+        ROT180   ("rot180",   true)  { public int src(int r, int c, int rows, int cols) { return (rows - 1 - r) * cols + (cols - 1 - c); } },
+        ROT270   ("rot270",   true)  { public int src(int r, int c, int rows, int cols) { return c * cols + (rows - 1 - r); } },           // square-only (transposes)
+        MIRROR_H ("mirrorH",  false) { public int src(int r, int c, int rows, int cols) { return (rows - 1 - r) * cols + c; } },
+        MIRROR_V ("mirrorV",  false) { public int src(int r, int c, int rows, int cols) { return r * cols + (cols - 1 - c); } },
+        DIAG_MAIN("diagMain", false) { public int src(int r, int c, int rows, int cols) { return c * cols + r; } },                        // square-only (transposes)
+        DIAG_ANTI("diagAnti", false) { public int src(int r, int c, int rows, int cols) { return (rows - 1 - c) * cols + (rows - 1 - r); } }; // square-only (transposes)
 
         private final String label;
         private final boolean rotation;
@@ -32,8 +38,18 @@ public final class Dihedral implements SymmetryGroup {
 
     private Dihedral(List<Transform> transforms) { this.transforms = transforms; }
 
-    /** The full dihedral group of the square, in canonical order. */
+    /** The full dihedral group of the square, in canonical order (D4 — the covering order-4 domain). */
     public static SymmetryGroup d4() { return new Dihedral(List.of(Move.values())); }
+
+    /**
+     * The dihedral group of a rectangle (D2 — {@link Crystallographic#covers(int) covering} order 2): the
+     * <b>transpose-free</b> subgroup {@code {identity, rot180, mirrorH, mirrorV}}. Breaking the square's
+     * transpose symmetry (§11, "the rectangle") is exactly dropping {@code rot90/rot270} and the diagonal
+     * mirrors, which would swap a non-square domain's two distinct axes. Use this for a rectangular domain.
+     */
+    public static SymmetryGroup d2() {
+        return new Dihedral(List.of(Move.IDENTITY, Move.ROT180, Move.MIRROR_H, Move.MIRROR_V));
+    }
 
     @Override public List<Transform> transforms() { return transforms; }
 

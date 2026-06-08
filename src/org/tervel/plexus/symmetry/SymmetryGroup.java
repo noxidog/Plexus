@@ -15,6 +15,14 @@ import java.util.List;
  * returns ({@link #stabilizer}, {@link #canonicalStabilizer}, {@link #describe}). Consumers (the routing
  * descriptor, the broken/surviving sweep) rely on that alignment, so a derived subgroup
  * ({@link #rotations()}) must preserve relative order.
+ *
+ * <p><b>Scope: covering groups only.</b> An implementation may exist only for a <em>covering</em>
+ * (crystallographic) symmetry order — {@code n ∈ {1, 2, 3, 4, 6}}, the orders whose regular polygon tiles
+ * the plane. {@link Dihedral#d4()} (square) and {@link Dihedral#d2()} (rectangle — the transpose-free
+ * subgroup) are the realised ones; triangle (D3) and hexagon (D6) are covering-but-unbuilt. Non-covering
+ * orders (pentagon and beyond) are aperiodic and provably cannot be a finite group of this form — see
+ * {@link Crystallographic} for the split, the {@code φ(n) ≤ 2} criterion, and why Penrose covers fall
+ * outside this interface.
  */
 public interface SymmetryGroup {
 
@@ -26,16 +34,23 @@ public interface SymmetryGroup {
 
     /**
      * The self-symmetry of {@code g}: a bitmask over {@link #transforms()} of those that fix it. This is
-     * the routing descriptor's symmetry component and a context's in-key symmetry set.
+     * the routing descriptor's symmetry component and a context's in-key symmetry set. The {@code int[]}-only
+     * form assumes a square frame; the {@code (rows, cols)} form carries an explicit rectangular domain.
      */
     default int stabilizer(int[] g) {
+        final var s = Transform.side(g);
+        return stabilizer(g, s, s);
+    }
+
+    /** {@link #stabilizer(int[])} on an explicit {@code rows×cols} frame (a non-square domain). */
+    default int stabilizer(int[] g, int rows, int cols) {
         final var ts = transforms();
         var mask = 0;
-        for (var k = 0; k < ts.size(); k++) if (ts.get(k).fixes(g)) mask |= 1 << k;
+        for (var k = 0; k < ts.size(); k++) if (ts.get(k).fixes(g, rows, cols)) mask |= 1 << k;
         return mask;
     }
 
-    /** The minimal non-trivial rotation — the generator of the rotation subgroup (rot90 in 2D). */
+    /** The minimal non-trivial rotation — the generator of the rotation subgroup (rot90 on a square, rot180 on a rectangle). */
     default Transform minimalRotation() { return rotations().transforms().get(1); }
 
     /**
@@ -44,25 +59,37 @@ public interface SymmetryGroup {
      * copies onto one key, so orientation drops out of the descriptor.
      */
     default int canonicalStabilizer(int[] g) {
+        final var s = Transform.side(g);
+        return canonicalStabilizer(g, s, s);
+    }
+
+    /** {@link #canonicalStabilizer(int[])} on an explicit {@code rows×cols} frame (a non-square domain). */
+    default int canonicalStabilizer(int[] g, int rows, int cols) {
         final var step = minimalRotation();
         final var turns = rotations().transforms().size();
         var canonical = Integer.MAX_VALUE;
         var rot = g;
         for (var i = 0; i < turns; i++) {
-            canonical = Math.min(canonical, stabilizer(rot));
-            rot = step.apply(rot);
+            canonical = Math.min(canonical, stabilizer(rot, rows, cols));
+            rot = step.apply(rot, rows, cols);                          // rotation keeps rows×cols (rot180 / rot90 on square)
         }
         return canonical;
     }
 
     /** Whether any non-trivial rotation leaves {@code g} unchanged — i.e. {@code g} is rotationally round. */
     default boolean rotationFixes(int[] g) {
+        final var s = Transform.side(g);
+        return rotationFixes(g, s, s);
+    }
+
+    /** {@link #rotationFixes(int[])} on an explicit {@code rows×cols} frame (a non-square domain). */
+    default boolean rotationFixes(int[] g, int rows, int cols) {
         final var step = minimalRotation();
         final var turns = rotations().transforms().size();
-        var rot = step.apply(g);
+        var rot = step.apply(g, rows, cols);
         for (var i = 1; i < turns; i++) {
             if (Arrays.equals(rot, g)) return true;
-            rot = step.apply(rot);
+            rot = step.apply(rot, rows, cols);
         }
         return false;
     }

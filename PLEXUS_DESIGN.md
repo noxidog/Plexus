@@ -12,7 +12,7 @@ The input is a **binary square grid** (an `int[]` of `side²` cells, each 0 or 1
 
 The hard case is **contradictions**: grids labelled *against their own symmetry orbit*. Two shapes can be identical under every symmetry-derived quantity yet carry opposite labels (e.g. one member of an orbit flipped to 0 while its orbit-mates stay 1, or a shape labelled 1 while its rotated copies stay 0). No symmetry quantity can separate such a pair — they are the crux the design must handle honestly rather than smooth over.
 
-> **TODO — domain scope.** The machine is general over `side` (grid size is read from the data, see §2), but assumes a **square grid of binary cells**. Non-square grids, multi-valued cells, or non-grid domains need a different symmetry group and descriptor (§2, §10).
+> **TODO — domain scope.** The machine reads the grid **frame** (`rows × cols`) from the data's `nxm` header (§2, §8). **Square** domains route under D4 and **rectangular** (non-square) domains under D2 — the routing core (descriptor, context, score, topology) handles both. Still **square-only**: the geometry-heavy reports and ops (`Fiber`, `Shape`, `Scale`, `CellGraph`, grid rendering, `CollisionDiagnostic`), which infer a square frame from the cell count and so render/measure non-square grids wrongly though they do not crash. Multi-valued cells, hexagonal/aperiodic covers, 3-D, and non-grid domains need a different `SymmetryGroup`/lattice and remain unbuilt (§2, `Crystallographic`).
 >
 > *Reference datasets (`data/`, one slice-question each — see `data/README.md`): minimal by construction. Each carries only the positive class, plus — for the collision sets — the few negatives that share a context with a positive; the router defaults every unseen key to reject, so the sea of negatives is redundant. The canonical example is the T-tetromino orbit on a 3×3 grid (`conservation-t-orbit-3x3`), with adversarial variants injecting the contradictions above (`twin-t-flip`, `position-corner-dot`). Useful as concrete examples; nothing in the core depends on these numbers.*
 
@@ -37,7 +37,7 @@ Resolution is exact and discrete; the only memory is the exact exception set.
 
 ## 2. The symmetry core
 
-The rigid symmetries of a square form the dihedral group **D4** (8 elements): identity, three rotations (90/180/270), two axis mirrors (horizontal, vertical), two diagonal mirrors (main, anti). The group is **injected** into the Plexus, so the group choice (full D4 vs a subgroup) lives in one place — the caller. Each `Transform` is parameterized by the grid's side `s`, so the same group acts on any size of square grid.
+The rigid symmetries of a square form the dihedral group **D4** (8 elements): identity, three rotations (90/180/270), two axis mirrors (horizontal, vertical), two diagonal mirrors (main, anti). The group is **injected** into the Plexus, so the group choice (full D4 vs a subgroup) lives in one place — the caller. Each `Transform` is parameterized by the grid **frame** (`rows × cols`), so the same machinery acts on any size of square grid (full D4) **and on rectangular grids** (the transpose-free subgroup **D2** = `{identity, rot180, mirrorH, mirrorV}`, `Dihedral.d2()`; §11, *the rectangle*). On a square frame the `(rows, cols)` primitive reduces to the historical single-side formula, so the square path is unchanged.
 
 ### Fundamental domains (octants)
 
@@ -49,9 +49,9 @@ A shape's symmetry is its **stabilizer** — the subset of the group that fixes 
 
 A shape is **radial** if some non-trivial rotation fixes its centred form (`rotationFixes`) — a round object (dot, plus) with no meaningful orientation. Radial shapes take a different branch (§4).
 
-The group lives in `org.tervel.plexus.symmetry`: `Transform` (one rigid grid→grid map, `extends UnaryOperator<int[]>`), `SymmetryGroup` (stabilizer, canonicalStabilizer, rotationFixes, minimalRotation, rotations, describe), and `Dihedral.d4()`.
+The group lives in `org.tervel.plexus.symmetry`: `Transform` (one rigid grid→grid map, `extends UnaryOperator<int[]>`, frame-parameterized by `(rows, cols)`), `SymmetryGroup` (stabilizer, canonicalStabilizer, rotationFixes, minimalRotation, rotations, describe — each with a `(rows, cols)` overload), `Dihedral.d4()` (square) and `Dihedral.d2()` (rectangle), and `Crystallographic` (the covering/non-covering split).
 
-> **TODO — group is square-specific.** `Dihedral.d4()` is the only group implemented. Other domains (hexagonal grids, 3-D, non-grid point sets) would need their own `SymmetryGroup`. The injection seam is in place; the alternatives are not.
+> **TODO — covering domains beyond the rectangle.** Two groups are implemented: `Dihedral.d4()` (square) and `Dihedral.d2()` (rectangle — the transpose-free subgroup, the first realized non-square domain). The remaining **covering** orders — triangle (D3) and hexagon (D6), `Crystallographic.covers` — need a new lattice (the geometry-heavy ops still assume a square `int[]`); the **non-covering** orders — pentagon and beyond, aperiodic/Penrose — provably cannot be a finite `SymmetryGroup` at all (no finite group, no translation to quotient) and belong at the `Scale`/cut-and-project seam. Both are unbuilt, with the boundary, the `φ(n) ≤ 2` criterion, and the reasoning in `Crystallographic`. The injection seam is in place; the alternatives are not.
 
 ---
 
@@ -238,7 +238,7 @@ org.tervel.plexus
 ├── Main                the interpreter (parse, train, REPL)
 ├── RenormalizationLoopRunner   the two-scale closure loop (§11, change-of-scale derivation)
 ├── SultanRunner        optimal-stopping demo: utility × strategy over the contexts (§11, deciding without the volume)
-├── symmetry/           Transform, SymmetryGroup, Dihedral, Shape   (the principled core)
+├── symmetry/           Transform, SymmetryGroup, Dihedral (d4 square / d2 rectangle), Crystallographic (covering split), Shape   (the principled core)
 ├── invariants/         Invariant, Mass+Connectivity composed into Signature, MaxDegree, Position  (injected refiners)
 ├── residual/           ResidualResolver (the boundary seam), ExactExceptions (deterministic default)
 ├── ops/                Searcher (symmetry sweep), Fiber (descriptor-fiber), ThreadVolume (the thread's volume = determinant), Decompose (shape→atoms), Scale (block-decimation / change-of-scale), Topology (the automaton)
@@ -262,7 +262,7 @@ The split: **symmetry is the principled, group-theoretic core**; **invariants ar
 
 ## 8. The interpreter
 
-`Main <data-file>` loads the dataset (path from the argument), infers the grid side from the data, trains, and drops into a REPL:
+`Main <data-file>` loads the dataset (path from the argument), infers the grid **frame** (`rows × cols`) from the `nxm` header — routing square domains under D4 and rectangular ones under D2 — trains, and drops into a REPL:
 
 ```
                  a node                                   the whole table
@@ -490,6 +490,14 @@ On top of a utility sits **optimal stopping** — the secretary / **Sultan's dow
 The rule is factored into a **harness (`OptimalStop`) and a `Strategy`** — the explore-vs-commit personality dial. The shipped trio anchors the **safe↔risky axis with the dowry as the calibrated `NEUTRAL`**: `SAFE` (greedy, take the first — risk-averse pole, `P(best)=1/n`), `NEUTRAL` (`1/e`, maximises `P(best)`), `RISKY` (holdout, wait for the best — risk-seeking pole, `P(best)=1/n`). Neutral is not a compromise but the **fixed point of the two regrets** (settling-for-less vs ending-empty), which is why it is the unique optimum the poles fall away from (the `SultanRunner` Monte Carlo shows exactly this: ≈0.38 at neutral, ≈0.05 at both poles). `Strategy.risk(factor)` scales riskiness relative to neutral, each doubling **halving the remaining distance to the pole it leans toward** — `risk(2)` ("twice as risky") sits at `(1+1/e)/2 ≈ 0.684`, halfway from the dowry to pure holdout.
 
 Two honest seams. **(1)** This is **decision theory** — one agent against indifferent chance — built on the same expected-utility foundation as **game theory**, which is its multi-agent sibling (add a second chooser competing for the same stream and the threshold stops being a personality and becomes a strategy that must best-respond to the opponent's — a *stopping game*, unbuilt). **(2)** The `1/e` rule is blind because the abstract problem *cannot* see the remaining volume — but a Plexus **can** (`Fiber`, `ThreadVolume`), so it is uniquely equipped to run the **volume-aware** (full-information) rule instead: a declining threshold read off how much fiber remains, which `Strategy.commit(index, total, value, benchmark)` is general enough to host as a future sibling of the threshold family. The residual where even this runs out — two outcomes tied on every admissible measurement — is the **symmetry-twin** (§10.4): the choice no rule can make, left to the exact-exception store (the choice function supplied by fiat, the finite stand-in for an Axiom-of-Choice selection).
+
+### Symmetry breaking: the rectangle, and sexual dimorphism
+
+The descriptor's grid is **square** because the square's symmetry (D4) makes the two axes *interchangeable* — the transpose is a symmetry, so "extent along x" and "extent along y" are the same kind of coordinate (Principle 6). Break that — make the grid a **rectangle** — and the transpose dies (D4 → D2): the two axes become **incommensurable**, two specialized dimensions that can no longer be folded into each other. A *vertical* box is then depth-first search (deep along one axis, narrow on the other); a *horizontal* box is breadth-first (its transpose partner); and choosing between them is choosing *which* dimension gets the deep search. The aspect ratio is how lopsided that commitment is — square = agnostic, a thin rectangle = "one axis is nearly everything." (This is no longer only a reading: `Dihedral.d2()` implements exactly the D2 break, and the routing core handles rectangular domains — §2.)
+
+Read biologically, this symmetry-breaking **is sexual dimorphism.** Isogamy — gametes all one size — is the *square*: the two reproductive roles are interchangeable (and high-symmetry; many isogamous mating types form a regular n-gon, every role equivalent). Anisogamy — two gamete sizes evolving under disruptive selection — is the *rectangle*: the transpose breaks, and the population splits into a **depth specialist** (the egg: few, large, provisioned — *exploit*) and a **breadth specialist** (the sperm: many, small, motile — *explore*). The two sexes are the broken transpose; the egg/sperm split *is* the depth/breadth (DFS/BFS) split of the strategy section above, frozen into biology — which is why the dominant strategy under incommensurable axes is two specialists rather than one compromise. (Honest limit: this is rigorous at the **gamete** level — anisogamy genuinely is a depth/breadth bifurcation — and a just-so story above it. "Male minds vs female minds" collapses an orbit a single axis cannot carry — the §10.4 trap, a scalar forced onto a whole behavioural fibre.)
+
+The covering split (`org.tervel.plexus.symmetry.Crystallographic`) extends the same reading. *n* equal mating types are a regular n-gon, and only the **covering** orders {1, 2, 3, 4, 6} (Euler totient `φ(n) ≤ 2`) tile a periodic grid — these are exactly the symmetries Plexus can route over. So two anisogamous sexes is the symmetry-**broken**, low-symmetry case (the rectangle), while many equal mating types is the high-symmetry case (the n-gon) — counter-intuitively, *more* sexes means *more* symmetry, not a stranger one. The **non-covering** orders — pentagon and beyond, `φ(n) > 2` — cannot lie flat and periodic at all; their surplus symmetry escapes into **curvature** (a regular pentagon's 36° vertex gap closes into the dodecahedron), **aperiodicity** (Penrose), or a **higher dimension** (cut-and-project from `φ(n)`-D). That boundary is the one `Crystallographic` draws, and the aperiodic side is its standing TODO.
 
 ### Classical ↔ quantum (orbit vs representative)
 

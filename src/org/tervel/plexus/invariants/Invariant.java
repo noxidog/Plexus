@@ -59,12 +59,17 @@ public interface Invariant extends ToIntFunction<int[]> {
     /** Side length of a square grid. */
     static int side(int[] g) { return (int) Math.round(Math.sqrt(g.length)); }
 
-    /** Bounding box of the active cells as {@code {height, width}}; {@code {0,0}} if the grid is empty. */
+    /** Bounding box of the active cells as {@code {height, width}}; {@code {0,0}} if empty. Square frame. */
     static int[] box(int[] g) {
         final var side = side(g);
-        var minR = side; var maxR = -1; var minC = side; var maxC = -1;
+        return box(g, side, side);
+    }
+
+    /** {@link #box(int[])} on an explicit {@code rows×cols} frame (a non-square domain; {@code cols} is the row stride). */
+    static int[] box(int[] g, int rows, int cols) {
+        var minR = rows; var maxR = -1; var minC = cols; var maxC = -1;
         for (var i = 0; i < g.length; i++) if (g[i] == 1) {
-            final int r = i / side, c = i % side;
+            final int r = i / cols, c = i % cols;
             minR = Math.min(minR, r); maxR = Math.max(maxR, r);
             minC = Math.min(minC, c); maxC = Math.max(maxC, c);
         }
