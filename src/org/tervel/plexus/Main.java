@@ -11,6 +11,7 @@ import org.tervel.plexus.ops.Decompose;
 import org.tervel.plexus.ops.Scale;
 import org.tervel.plexus.reports.GridQuery;
 import org.tervel.plexus.reports.PossibilityReport;
+import org.tervel.plexus.reports.PrimeReport;
 import org.tervel.plexus.reports.ScoreReport;
 import org.tervel.plexus.reports.SliceReport;
 import org.tervel.plexus.reports.StabilizerQuery;
@@ -95,7 +96,7 @@ public class Main {
 
                                    a node                                  the whole table
                       resolve  ->  [1] stabilizer  [4] grid                [5] score
-                      generate <-  [2] invariant   [3] label  [9] atoms  [s] scale    [6] topology  [7] possibility  [v] volume  [8] diagnose
+                      generate <-  [2] invariant   [3] label  [9] atoms  [s] scale  [p] prime    [6] topology  [7] possibility  [v] volume  [8] diagnose
                       [q] quit""");
             System.out.print("> ");
             if (!in.hasNextLine()) return;
@@ -112,6 +113,7 @@ public class Main {
                 case "8" -> System.out.println(new CollisionDiagnostic(inputs, labels).apply(plexus));
                 case "9" -> queryDecompose(plexus, in, side);
                 case "s" -> queryScale(plexus, in, side);
+                case "p" -> System.out.println(new PrimeReport(side).apply(plexus));
                 case "q", "quit", "exit" -> { return; }
                 case "" -> { }
                 default -> System.out.println("unknown command: " + cmd);
