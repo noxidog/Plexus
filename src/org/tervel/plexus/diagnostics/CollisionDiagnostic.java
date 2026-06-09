@@ -26,7 +26,7 @@ import java.util.stream.Collectors;
  * <h2>Twin vs. separable</h2>
  * Two grids are <b>provable symmetry-twins</b> when they lie in the same orbit — one is a rigid image of
  * the other (equal {@link Shape#of canonical pose}) — yet carry opposite labels. No group-invariant can
- * separate them (§9.4), so they are the irreducible floor and the diagnostic leaves them to the exact
+ * separate them (§10.4), so they are the irreducible floor and the diagnostic leaves them to the exact
  * exception store. A collision is <b>separable</b> exactly when the positive and negative label sets are
  * <em>disjoint as orbits</em> (no shared canonical shape): then some group-invariant differs across the
  * split, and the battery looks for which one.
@@ -35,6 +35,13 @@ import java.util.stream.Collectors;
  * For a separable context it also runs {@link Fiber} to enumerate the full structural fiber — every grid
  * that routes there, seen or unseen — and reports over how many distinct values the winning primitive
  * spreads it, confirming the blueprint discriminates the whole fiber, not just the trained sample.
+ *
+ * <h2>Read as cognition: this is the expert</h2>
+ * The diagnostic <em>is</em> the expert. A novice fails a collision by <b>underdetermination</b> — a scalar
+ * with too many candidate carriers, no way to pick which difference accounts for it. The expert relocates the
+ * failure all the way down to the <b>irreducible twin floor</b>, and names the separating axis when one
+ * exists. Expertise does not remove the breakdown; it moves it from "underdetermined among many differences"
+ * to "the two are genuine twins" (PLEXUS_DESIGN §11, <i>What the symmetry holds</i>).
  */
 public final class CollisionDiagnostic implements Operation<String> {
 
@@ -80,7 +87,7 @@ public final class CollisionDiagnostic implements Operation<String> {
 
             if (isProvableTwin(plexus, pos, neg)) {
                 twins++;
-                sb.append("  verdict: PROVABLE SYMMETRY-TWIN — irreducible by symmetry (§9.4); "
+                sb.append("  verdict: PROVABLE SYMMETRY-TWIN — irreducible by symmetry (§10.4); "
                         + "left to the exact exception store. No invariant can separate orbit-mates.\n");
                 continue;
             }

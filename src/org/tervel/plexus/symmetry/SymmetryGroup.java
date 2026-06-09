@@ -23,6 +23,14 @@ import java.util.List;
  * orders (pentagon and beyond) are aperiodic and provably cannot be a finite group of this form — see
  * {@link Crystallographic} for the split, the {@code φ(n) ≤ 2} criterion, and why Penrose covers fall
  * outside this interface.
+ *
+ * <p><b>No element represents the null.</b> A group is invertible — every transform has an inverse, so
+ * <em>nothing maps to nothing</em>. The empty / zero configuration is the <b>universal fixed point</b>: fixed
+ * by every transform precisely because it is the <em>absence</em> of the object the group acts on, and so it
+ * lies outside every orbit. It surfaces here only as degenerate cases (the empty grid; an unseen key
+ * defaulting to reject in {@link org.tervel.plexus.Plexus#score}; the trivial stabilizer) — it can be
+ * <em>labelled</em> but never <em>enacted</em>. This is the framework's own residual: the one thing the
+ * symmetry can point at but never hold (PLEXUS_DESIGN §11, <i>What the symmetry holds</i>).
  */
 public interface SymmetryGroup {
 

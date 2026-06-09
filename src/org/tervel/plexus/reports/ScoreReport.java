@@ -55,13 +55,13 @@ public class ScoreReport implements Report {
         sb.append(String.format("  mcc      = %+.3f%n", mcc));
         sb.append(String.format("  actual T = %d   predicted T = %d%n", tp + fn, tp + fp));
         sb.append(String.format("  TP=%d  FP=%d  FN=%d  TN=%d%n", tp, fp, fn, tn));
-        appendGrids(sb, "recalled (true-positive T's)", recalled);
-        appendGrids(sb, String.format("false negatives (%d, missed T's)", fn), missed);
+        appendGrids(plexus, sb, "recalled (true-positive T's)", recalled);
+        appendGrids(plexus, sb, String.format("false negatives (%d, missed T's)", fn), missed);
         // Show the most-confident false positives — the ones in the most positive-leaning contexts,
         // i.e. the patterns the model is most convinced are T's despite being negatives.
         falsePositives.sort(java.util.Comparator.<int[]>comparingDouble(g -> confidence(plexus, g)).reversed());
         final var sample = Math.min(SAMPLE_FALSE_POSITIVES, falsePositives.size());
-        appendGrids(sb, String.format("false positives (top %d of %d by score)", sample, falsePositives.size()),
+        appendGrids(plexus, sb, String.format("false positives (top %d of %d by score)", sample, falsePositives.size()),
                 falsePositives.subList(0, sample));
         return sb.toString();
     }
@@ -74,22 +74,15 @@ public class ScoreReport implements Report {
         return total == 0 ? 0.0 : (double) c.pos() / total;
     }
 
-    /** Renders each grid as a side×side block of 'x'/'_' under a heading; prints "(none)" if empty. */
-    private static void appendGrids(StringBuilder sb, String heading, List<int[]> grids) {
+    /** Renders each grid as a {@code rows×cols} block of 'x'/'_' on its true frame; prints "(none)" if empty. */
+    private static void appendGrids(Plexus plexus, StringBuilder sb, String heading, List<int[]> grids) {
         if (grids.isEmpty()) {
             sb.append("  ").append(heading).append(": (none)\n");
             return;
         }
         sb.append("  ").append(heading).append(":\n");
-        final var side = (int) Math.sqrt(grids.get(0).length);
         for (final var grid : grids) {
-            for (var r = 0; r < side; r++) {
-                sb.append("    ");
-                for (var c = 0; c < side; c++) {
-                    sb.append(grid[r * side + c] == 1 ? 'x' : '_');
-                }
-                sb.append('\n');
-            }
+            Report.renderGrid(sb, "    ", grid, plexus.rows(grid), plexus.cols(grid), 'x', '_');
             sb.append('\n');
         }
     }

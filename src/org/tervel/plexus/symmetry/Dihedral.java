@@ -46,6 +46,11 @@ public final class Dihedral implements SymmetryGroup {
      * <b>transpose-free</b> subgroup {@code {identity, rot180, mirrorH, mirrorV}}. Breaking the square's
      * transpose symmetry (§11, "the rectangle") is exactly dropping {@code rot90/rot270} and the diagonal
      * mirrors, which would swap a non-square domain's two distinct axes. Use this for a rectangular domain.
+     *
+     * <p><b>Decidability lives in the break.</b> The broken transpose is what <em>lets</em> a structure
+     * collapse to an answer: the asymmetry between the two axes is the routing coordinate. <b>Re-symmetrizing</b>
+     * — restoring the transpose with {@link #d4()} — makes the two axes transpose-equivalent, i.e. a <em>twin</em>,
+     * and so undecidable. The magnitude of the break is the confidence of the collapse (PLEXUS_DESIGN §11).
      */
     public static SymmetryGroup d2() {
         return new Dihedral(List.of(Move.IDENTITY, Move.ROT180, Move.MIRROR_H, Move.MIRROR_V));

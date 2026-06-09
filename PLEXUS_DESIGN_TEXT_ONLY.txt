@@ -322,6 +322,20 @@ Why this section exists. It is not ornament, and it is not a claim to have built
 
 This remains an interpretive lens, not implemented mechanism (the caveat at the end says exactly what the code does and doesn't do) — but that honesty is what makes the argument carry weight: the parallels are exact enough to state plainly precisely because they were not engineered to fit.
 
+Reading map: the basis, and which example rides which axis
+
+The examples below span a small basis — about six independent axes — but the physics ones cluster heavily on the first. This map states the basis so you can read §11 either way: down a row for the coherence argument (the same structure recurring), or one example per row for the fastest collapse (the spanning set — the minimum that triangulates every axis once).
+
+ #  Axis (the basis vector)  What it fixes  Examples in §11 
+ 1  Slice / conservation  fix a symmetry's coordinates; what stays constant is the conserved quantity (the descriptor)  The correspondence · Conservation · Time-as-cursor · Law-as-compression · Least action · Sum over paths · Classical↔quantum · Drive + gate · Relativity · Light cone 
+ 2  Fiber / entropy  the un-fixed remainder — log\  fiber\  — whose floor is the residual / twin  Entropy = log of the fiber 
+ 3  Volume = determinant  the size of the collapse, measured as a determinant  The thread is the determinant 
+ 4  Decision without the volume  act under a utility / stopping rule when the fiber can't be computed  Utility and strategy 
+ 5  Symmetry-breaking  decidability lives in the break (rectangle / D2, depth↔breadth, dimorphism)  Symmetry breaking: the rectangle 
+ 6  Change of scale  the fold across scales (renormalization / inflation)  Change of scale 
+
+Row 1 is sampled ten ways on purpose — the recurrence across physics is the coherence argument, and a reader who wants to be convinced should read across it. Rows 2–6 are sampled once each, which is below the two-or-three instances it takes to triangulate an axis cold — so a reader who wants to grasp the structure fastest should read one example from each row and treat the rest of row 1 as confirmation, not new content. The rows are the axes; the map is the basis; the imbalance (10 / 1 / 1 / 1 / 1 / 1) is deliberate breadth on axis 1 and minimal coverage elsewhere.
+
 The correspondence
 
  Plexus  physics 
@@ -436,6 +450,23 @@ Crucially it lives outside Plexus, as a separate project that depends on Plexus 
 The name is the joke: Complexus is the complexity-engine of a simplicity-machine — the anti-Plexus one mutated letter away, the surplus the minimality principle exists to forbid. Its tagline is "Occam's Other Razor — the one that multiplies entities."
 
 TODO — Complexus (starting soon; this subsection is a placeholder). Recorded here as the intent until the project exists; once Complexus is created, this will be revised — the author will supply the replacement section. Main intent of record: a separate, Plexus-depending project that (1) wraps the collision diagnostic's discovered topological primitives as Invariants and injects them into the runtime chain — the self-extending loop discover → wrap → inject → refit → halt at the twin floor, gated on the diagnostic's existing Fiber confirmation so it cannot overfit the trained sample; (2) at its far end, synthesizes novel composed invariants by search over the primitive algebra (interpreted function trees — no compiler), keeping each composition group-invariant (sums/products of invariants stay invariant) and minimal; (3) preserves Plexus's purity by living one-directionally downstream, consuming public seams only. Plexus is to remain unchanged until Complexus surfaces a concrete need.
+
+What the symmetry holds — and the one thing it can't
+
+The intuitions above (and the collapse / opposite-orthogonal-null vocabulary they ride on) reconcile with the implementation at three different costs, and the cost is exactly the concept's distance from the symmetry machinery.
+
+Held already — the code does it, only the bridge was unwritten:
+
+- Re-symmetrization → undecidable twin. Breaking the transpose (Dihedral.d2(), the rectangle) is what lets a structure collapse to an answer; restoring it (d4(), the square) makes the two axes transpose-equivalent — a twin — and undecidable. Decidability is a function of the broken symmetry; the magnitude of the break is the confidence of the collapse.
+- Pose vs. invariant (mood-invariance). Shape is the pose, the descriptor is the invariant, and Invariant.invariantUnder is why the structural read is mood-invariant: a non-invariant perturbation is, by contract, discarded. Reading structure is robust to the crowd's mood precisely because the contract throws the mood away.
+- The residual as an unhoused scalar ("hype"). ExactExceptions stores what no group-invariant can resolve. Any external scalar with no structural home is a residual of the same kind — the price gap between two structural twins (value not in the object) is exactly this, read outward.
+- The expert is the diagnostic. CollisionDiagnostic is the expert: it relocates a collision from underdetermination (a scalar with many candidate carriers) down to the irreducible twin floor, and names the separating axis when one exists.
+
+Held only at a different order — covering-but-unbuilt: the triad — three-as-minimal-closure (one = null, two = unstable duality, three = the first closed structure; Trinity / Trimurti / Mandate of Heaven) — is a D3 (ternary) symmetry, not D2. It is covering (Crystallographic.covers(3)) but unbuilt; the intuition maps, the runnable form waits on the triangular lattice. The middle term (preserver / Son / Ruler) is the order-3 fixed locus — remove it and the closure degenerates to a line.
+
+Not held by any group — the framework's own residual: the null (indifference; the collapse to zero). No group element represents it: a symmetry group is invertible bijections, and nothing maps to nothing. The null is the universal fixed point — fixed by every transform precisely because it is the absence of the object the group acts on — so it lies outside every orbit. The code contains it only as degenerate cases (the empty grid, an unseen key defaulting to reject, the trivial stabilizer); it can be labelled (here, and at SymmetryGroup) but never enacted. This is the §10.4 twin floor turned on the framework itself — the one concept the symmetry can point at but never hold, and fittingly it is the concept of non-collapse: the opposite of love is not its negation (hate, a flip) but its absence (indifference, the zero).
+
+So the reconciliation grades its own documentation debt: the mappable intuitions cost a sentence, the different-order one costs a lattice (D3), and the unmappable one costs a label — each price set by how far the idea sits from the group.
 
 Caveat — what the code actually does
 

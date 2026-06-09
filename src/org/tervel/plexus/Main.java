@@ -53,7 +53,7 @@ public class Main {
         // new Position() (radial-only) for dot cases, or new MaxDegree() to separate a path from a fork.
         final var connectivity = square ? new Connectivity() : new Connectivity(rows, cols);
         final var invariants = List.<Invariant>of(new Signature(new Mass(), connectivity, square ? rows : rows + cols));
-        // The residual policy past the twin floor (§9.4): the deterministic exact-exception store. Swap in a
+        // The residual policy past the twin floor (§10.4): the deterministic exact-exception store. Swap in a
         // brute-force or learned ResidualResolver here to predict unseen twins instead of memorising them.
         final var resolver = new ExactExceptions();
 

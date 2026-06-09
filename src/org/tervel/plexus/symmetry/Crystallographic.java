@@ -23,7 +23,9 @@ import java.util.Set;
  * core ({@link org.tervel.plexus.invariants.Connectivity}, {@link org.tervel.plexus.invariants.Invariant#box},
  * and the descriptor geometry) is already done. The triangle (D3) and hexagon (D6) are covering-but-unbuilt,
  * and they share a single triangular/hexagonal lattice (the two are duals), so both follow from one new
- * lattice. The cost there is <em>not</em> the group — the {@link SymmetryGroup} seam is injected — it is the
+ * lattice. (Order 3 — D3 — is also the home of <b>three-as-minimal-closure</b>, the triad of §11: one is the
+ * null, two an unstable duality, three the first closed structure; the triad maps to the framework but not to
+ * D2, and its runnable form waits on this lattice.) The cost there is <em>not</em> the group — the {@link SymmetryGroup} seam is injected — it is the
  * geometry still hardcoded to a square in the heavier ops: {@code CellGraph}, the bounding-box enumeration
  * ({@code Shape}, {@code Fiber}), the k×k decimation ({@code Scale}). Lifting those onto a {@code Lattice}
  * abstraction is the remaining (bounded) work; the covering groups then plug in.

@@ -83,7 +83,7 @@ public class Plexus implements BiConsumer<int[], Integer> {
 
     /**
      * The intra-context decision policy for the part structure cannot resolve — the residual past the twin
-     * floor (§9.4). Routing is exact and deterministic up to the context; this resolver owns the leaf
+     * floor (§10.4). Routing is exact and deterministic up to the context; this resolver owns the leaf
      * decision inside it. It is injected (a peer of the group and chain): the deterministic
      * {@link ExactExceptions} is what ships, but a brute-force or learned resolver can take its place.
      */
@@ -122,10 +122,10 @@ public class Plexus implements BiConsumer<int[], Integer> {
     }
 
     /** Row count of {@code g}'s frame — the pinned domain height, or the inferred square side. */
-    private int rows(int[] g) { return rows > 0 ? rows : (int) Math.round(Math.sqrt(g.length)); }
+    public int rows(int[] g) { return rows > 0 ? rows : (int) Math.round(Math.sqrt(g.length)); }
 
     /** Column count of {@code g}'s frame — the pinned domain width (row stride), or the inferred square side. */
-    private int cols(int[] g) { return cols > 0 ? cols : (int) Math.round(Math.sqrt(g.length)); }
+    public int cols(int[] g) { return cols > 0 ? cols : (int) Math.round(Math.sqrt(g.length)); }
 
     // ---- Routing: resolve a shape to its context key ---------------------------------------
 

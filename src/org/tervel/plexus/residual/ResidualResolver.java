@@ -9,11 +9,11 @@ import java.util.List;
  * The <b>residual boundary</b> — the exact theoretical line where structural routing ends and something
  * else begins.
  *
- * <p>Up to the twin floor (§9.4) the descriptor is <b>exact and deterministic</b>: symmetry plus the
+ * <p>Up to the twin floor (§10.4) the descriptor is <b>exact and deterministic</b>: symmetry plus the
  * invariant chain route every grid to a context by pure structure, no weights, no statistics. But two
  * symmetry-twins share every group-derived quantity by proof, so the group algebra has <em>nothing left to
  * say</em> about which one carries which label. That gap is the residual — the incompressible signal that
- * lives outside the symmetry algebra (§9.4, §10 "entropy = log|fiber|"). Resolving it is no longer routing;
+ * lives outside the symmetry algebra (§10.4, §10 "entropy = log|fiber|"). Resolving it is no longer routing;
  * it is whatever you are willing to bring to bear: an exact lookup, a brute-force search, or a learned net.
  *
  * <p>This interface is that injection seam. A {@code Plexus} routes a grid to its {@link Context} — the most

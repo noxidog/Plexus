@@ -28,15 +28,10 @@ public class GridQuery implements Report {
         final var key = plexus.descriptor(grid);
         final var ctx = plexus.context(grid);
         final var ans = plexus.score(grid);
-        final var side = (int) Math.round(Math.sqrt(grid.length));
 
         final var sb = new StringBuilder();
         sb.append("exact grid:\n");
-        for (var r = 0; r < side; r++) {
-            sb.append("    ");
-            for (var c = 0; c < side; c++) sb.append(grid[r * side + c] == 1 ? 'x' : '.');
-            sb.append('\n');
-        }
+        Report.renderGrid(sb, "    ", grid, plexus.rows(grid), plexus.cols(grid), 'x', '.');
         final var shape = Shape.of(grid, group);
         sb.append("  symmetry: ").append(key.radial() ? "(radial)" : "[" + group.describe(key.symmetry()) + "]")
           .append("   placement stabilizer: [").append(group.describe(group.stabilizer(grid))).append("]\n");
