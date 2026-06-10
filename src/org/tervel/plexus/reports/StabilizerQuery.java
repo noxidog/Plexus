@@ -19,7 +19,10 @@ import java.util.Set;
 import java.util.TreeSet;
 
 /**
- * Query by stabilizer. Two modes, both reached from menu {@code [1]}:
+ * Query by stabilizer. Two modes by constructor — posed and solve — both reached from menu {@code [1]};
+ * solve then branches by track (oriented vs radial), so the design counts the same surface as three modes
+ * (PLEXUS_DESIGN §8: posed, solve-oriented, solve-radial). The counts are coprime because the tree is
+ * uneven: posed is a leaf, solve forks. Same structure, counted at two depths:
  *
  * <ul>
  *   <li><b>posed</b> — specify a <b>canonical shape + allowed symmetries</b>. The symmetries name the

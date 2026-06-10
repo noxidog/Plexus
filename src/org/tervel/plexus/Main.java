@@ -193,10 +193,13 @@ public class Main {
         }
     }
 
-    /** [2] Query by invariant: list contexts whose named coordinate matches, e.g. {@code mass=4}. */
+    /**
+     * [2] Query by invariant: list contexts whose named coordinate matches, e.g. {@code sig=167} (mass and
+     * connectivity are packed inside {@code sig}, so they are queried through it, not as separate columns).
+     */
     static void queryInvariant(Plexus plexus, Scanner in) {
         try {
-            System.out.print("invariant filter (e.g. mass=4):  ");
+            System.out.print("invariant filter (e.g. sig=167):  ");
             final var parts = in.nextLine().split("=", 2);
             final var col = parts[0].trim();
             final var val = Integer.parseInt(parts[1].trim());

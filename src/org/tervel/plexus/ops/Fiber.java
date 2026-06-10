@@ -35,7 +35,7 @@ public final class Fiber implements Operation<Stream<int[]>> {
      * The descriptor-fiber {@code D⁻¹(key)}: every {@code side×side} grid that routes to <em>this exact
      * node</em> — same symmetry verdict, same discriminator coordinates, position included.
      *
-     * <p>It reads the mass off the key ({@code coords[0]}, the leading {@code Mass} coordinate) — no
+     * <p>It unpacks the mass from the key's leading {@code Signature} coordinate ({@code Signature.massOf}) — no
      * example grid needed, so it works for pure contexts that stored none — then enumerates in the
      * bounding-box frame: for each candidate box shape {@code bh×bw}, the tight {@code bh×bw} patterns of
      * that mass, placed at every position, keeping only candidates whose descriptor equals the key (which
@@ -71,6 +71,11 @@ public final class Fiber implements Operation<Stream<int[]>> {
                         });
             }
         return out.stream();
+    }
+
+    /** The fiber's size {@code |D⁻¹(key)|} — the combinatorial volume whose log is the entropy (§11). */
+    public long count(Plexus plexus) {
+        return apply(plexus).count();
     }
 
     // ---- bounding-box enumeration helpers ----------------------------------------------------
