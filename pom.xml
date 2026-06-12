@@ -1,0 +1,139 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Free, domain-less namespace verified on Sonatype Central via the GitHub account (no DNS).
+         Central honors it permanently, so popularity never forces a coordinate change. -->
+    <groupId>io.github.noxidog</groupId>
+    <artifactId>plexus</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>Plexus</name>
+    <description>A symmetry-routed exact classifier — a router, not a network. Resolves a binary grid
+        to a label by pure structural routing: a D4 symmetry verdict refined by an injected chain of
+        D4-invariant coordinates, addressing one context that owns its answer. See PLEXUS_DESIGN.md.
+    </description>
+    <url>https://github.com/noxidog/Plexus</url>
+
+    <licenses>
+        <license>
+            <name>MIT License</name>
+            <url>https://opensource.org/licenses/MIT</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <id>noxidog</id>
+            <name>Tervel Atanassov</name>
+            <email>noxidog@gmail.com</email>
+            <organization>Self</organization>
+            <roles>
+                <role>architect</role>
+                <role>developer</role>
+            </roles>
+            <timezone>-8</timezone>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:https://github.com/noxidog/Plexus.git</connection>
+        <developerConnection>scm:git:https://github.com/noxidog/Plexus.git</developerConnection>
+        <url>https://github.com/noxidog/Plexus</url>
+    </scm>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <java.version>21</java.version>
+    </properties>
+
+    <build>
+        <!-- Sources live in src/ (not the Maven-standard src/main/java). -->
+        <sourceDirectory>src</sourceDirectory>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <release>${java.version}</release>
+                </configuration>
+            </plugin>
+            <!-- Central requires a sources jar; useful everywhere. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+                <version>3.3.1</version>
+                <executions>
+                    <execution>
+                        <id>attach-sources</id>
+                        <goals>
+                            <goal>jar-no-fork</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- Activate with `mvn deploy -Prelease` to publish to Maven Central. Kept out of the default
+             build so a plain `mvn package` needs no GPG key or Central credentials. -->
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <!-- Central requires a javadoc jar. doclint off so warnings don't fail the build. -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>3.11.2</version>
+                        <configuration>
+                            <doclint>none</doclint>
+                            <quiet>true</quiet>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <!-- Central requires every artifact to be GPG-signed. -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.2.7</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <!-- Publishes to the Sonatype Central Portal. Credentials come from the
+                         <server id="central"> entry in your ~/.m2/settings.xml. -->
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.7.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>true</autoPublish>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
+</project>
