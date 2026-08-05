@@ -44,9 +44,13 @@ public class GridQuery implements Report {
                     ctx.answer(), ctx.isTarget() ? "TARGET" : "reject", ctx.pos(), ctx.neg(),
                     ctx.isException(grid) ? "  [this grid is an exception -> score " + ans + "]" : ""));
         }
-        sb.append("  does each symmetry break the label?\n");
-        sb.append("    surviving (keep ").append(ans).append("): ").append(names(new Searcher(grid, ans).apply(plexus))).append('\n');
-        sb.append("    broken    (flip):    ").append(names(new Searcher(grid, 1 - ans).apply(plexus))).append('\n');
+        // The three verdicts partition the group exactly, so every transform is accounted for — including
+        // the ones that carry the grid off the trained map, which a 0/1 sweep used to file under "surviving".
+        final var self = plexus.verdict(grid);
+        sb.append("  does each symmetry break the label?  (surviving = same verdict, broken = flipped)\n");
+        for (final var v : Plexus.Verdict.values())
+            sb.append(String.format("    -> %-9s %s%s%n", v, names(new Searcher(grid, v).apply(plexus)),
+                    v == self ? "   <- surviving (the input's own verdict)" : ""));
         return sb.toString();
     }
 

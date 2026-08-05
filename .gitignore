@@ -1,5 +1,6 @@
 ### Build output ###
 out/
+testout/
 target/
 *.class
 

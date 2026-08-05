@@ -84,8 +84,7 @@ public final class ThreadVolume implements Operation<ThreadVolume.Measure> {
 
     /** {@code √det(J Jᵀ)} — the co-volume the invariant-component gradients span at {@code g}. */
     private double gramVolume(Plexus plexus, int[] g) {
-        final var rows = plexus.invariants().stream()
-                .filter(inv -> inv.applies(key.radial()))
+        final var rows = plexus.chainFor(key).stream()
                 .flatMap(inv -> inv.components().stream())   // unpack composites (Signature → V, E)
                 .map(comp -> gradient(comp, g))
                 .toList();

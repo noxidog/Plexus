@@ -5,7 +5,7 @@ loading it and running one menu op asks a specific question of the router (the �
 "physics as slices" reading). Naming is `<question>-<shape>-<size>`. Run any with:
 
 ```
-java -cp out org.tervel.plexus.Main data/<file>
+java -cp out org.tervel.plexus.cli.Main data/<file>
 ```
 
 The startup post-pass prints the collision diagnostic; the menu cells in parentheses
@@ -27,7 +27,8 @@ whole asset: no background fill.
 | `position-corner-dot-3x3.txt` | 9 (1 + / 8 −) | a dot at the top-left corner is 1, every other dot 0 | *When a shape has no orientation, what routes it? (the radial Position axis)* | startup `diagnose` → radial twin; `[1] stabilizer` radial solve (`gather` on 1 → `top-left`) |
 | `separable-path-fork-5x5.txt` | 2 (1 + / 1 −) | a fork (Δ=3) vs a path (Δ=2) of equal (V,E) | *Does my chain need a new axis to tell these apart? (mint a coordinate)* | startup `diagnose` → emits the `max-degree` blueprint |
 | `entropy-fiber-gap-5x5.txt` | 2 (all +) | a pure target class seen only twice | *Given all I can measure, how many distinct states stay indistinguishable? (entropy = log\|fiber\|)* | `[7] possibility` → `fiber=192 seen=2/192` |
-| `renormalization-path-fork-9x9.txt` | 12 (6 + / 6 −) | path-vs-fork at side 9 (so `k=3` decimation is non-degenerate) | *Is the structural law the same at every scale, or does it shatter under coarse-graining?* | startup `diagnose` (fine-scale separable collision); full two-scale verdict via `RenormalizationLoopRunner` |
+| `renormalization-path-fork-9x9.txt` | 12 (6 + / 6 −) | path-vs-fork at side 9 (so `k=3` decimation is non-degenerate) | *Is the structural law the same at every scale, or does it shatter under coarse-graining?* | startup `diagnose` (fine-scale separable collision); full two-scale verdict asserted by `RenormalizationTest` |
+| `rect-bar-2x4.txt` | 8 (3 + / 5 −) | the **domain** — a non-square `2×4` frame, so the group is D2, not D4 | *What does breaking a symmetry buy?* | `[b] symmetry` → the vocabulary keeps `mirrorH` **and** `mirrorV` as distinct stabilizers, which a square table cannot spell; `[t] trie` (the census example in §5 is this dataset); `[6] topology` |
 
 ## The two kinds of question (§11)
 
@@ -37,10 +38,20 @@ whole asset: no background fill.
   exception floor): the current chain can't resolve it, so the answer is a *new dimension of
   description* — the diagnostic emitting a blueprint. These are the "best questions": their
   answers grow the descriptor rather than reading it.
+- **Change-the-domain** — `rect-bar`: neither reads nor mints a coordinate but alters the *group*
+  the whole descriptor is built from. Breaking the transpose (D4 → D2) makes the two axes
+  incommensurable, and the payment shows up as **vocabulary**: `mirrorH` and `mirrorV` stop being
+  one rotation-conjugacy class and become separately askable (§11, *the rectangle*).
 
-The full two-scale renormalization experiment (the 9×9 path-fork set synthesised at full size
-in-code) runs with:
+Three ops interrogate the machine rather than the data, so they apply to every dataset:
+`[c] critic` grades each coordinate (legal / useful / new / earned / not cheating) and says, per
+collision, whether extending is even possible; `[b] symmetry` slices the table by surviving
+symmetry and regenerates the shapes that keep it; `[t] trie` prints the store's own shape — nodes
+per rung, which are already pure, and which rungs decided nothing (the prefix census).
+
+The full two-scale renormalization experiment is asserted, not printed — `RenormalizationTest`
+in the suite fails if coarse-graining ever stops shattering the path/fork distinction:
 
 ```
-java -cp out org.tervel.plexus.RenormalizationLoopRunner
+mvn test
 ```

@@ -7,8 +7,10 @@
 Plexus has no weights, no gates, no thresholds, no statistics. It resolves a binary grid to a
 label by *pure structural routing*: a symmetry verdict (the shape's stabilizer under the dihedral
 group D4) refined by an injected chain of D4-invariant coordinates, addressing one **context** that
-owns its answer (majority label, with the irreducible contradictions — the *twins* — left to an exact
-exception store). Resolution is exact and discrete; the only memory is the exception set.
+owns its answer (majority label, with the contradictions it cannot resolve held exactly rather than
+smoothed over). Resolution is exact and discrete, and the only memory is those contradictions: turn on
+self-extension and the store grows a new coordinate wherever one would separate them, leaving just the
+provable *twins* that no invariant ever could.
 
 The unifying idea is the **slice**: fix some coordinates of the descriptor and read what stays
 constant / enumerate what varies. Classification runs the descriptor forward; generation runs it
@@ -25,7 +27,22 @@ javac -d out $(find src -name "*.java")
 javac -d out (Get-ChildItem -Recurse src -Filter *.java).FullName
 
 # train + drop into the REPL
-java -cp out org.tervel.plexus.Main data/conservation-t-orbit-3x3.txt
+java -cp out org.tervel.plexus.cli.Main data/conservation-t-orbit-3x3.txt
+```
+
+To use it as a library rather than clone it — the published artifact carries no dependencies of its
+own, since JUnit is test-scoped and test scope is not transitive:
+
+```xml
+<dependency>
+    <groupId>io.github.noxidog</groupId>
+    <artifactId>plexus</artifactId>
+    <version>1.1.0</version>
+</dependency>
+```
+
+```groovy
+implementation 'io.github.noxidog:plexus:1.1.0'
 ```
 
 The REPL menu is a 2-D grid — classify/generate (rows) by node/whole-table (columns):
@@ -33,7 +50,7 @@ The REPL menu is a 2-D grid — classify/generate (rows) by node/whole-table (co
 ```
                  a node                                   the whole table
   resolve  ->  [1] stabilizer  [4] grid                   [5] score
-  generate <-  [2] invariant   [3] label  [9] atoms  [s] scale  [p] prime   [6] topology  [7] possibility  [v] volume  [8] diagnose
+  generate <-  [2] invariant   [3] label  [b] symmetry  [9] atoms  [s] scale  [p] prime   [6] topology  [t] trie  [7] possibility  [v] volume  [8] diagnose  [c] critic
   [q] quit
 ```
 
@@ -65,10 +82,12 @@ measured five independent ways, with the orbit-stabilizer theorem checked as an 
   identity, mirrorH sig=55        8       4         4         8.25           1  ok
 ```
 
-Run the two-scale renormalization experiment (does a structural law survive coarse-graining?):
+The experiments are assertions, not printouts — the two-scale renormalization result, the
+optimal-stopping dial, and the self-extension memory figures all live in `test/` and fail if
+they drift:
 
 ```sh
-java -cp out org.tervel.plexus.RenormalizationLoopRunner
+mvn test
 ```
 
 ## Where to read more

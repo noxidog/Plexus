@@ -1,5 +1,8 @@
-package org.tervel.plexus;
+package org.tervel.plexus.cli;
 
+import org.tervel.plexus.Plexus;
+
+import org.tervel.plexus.diagnostics.ChainCritic;
 import org.tervel.plexus.diagnostics.CollisionDiagnostic;
 import org.tervel.plexus.invariants.Connectivity;
 import org.tervel.plexus.invariants.Invariant;
@@ -15,12 +18,18 @@ import org.tervel.plexus.reports.PrimeReport;
 import org.tervel.plexus.reports.ScoreReport;
 import org.tervel.plexus.reports.SliceReport;
 import org.tervel.plexus.reports.StabilizerQuery;
+import org.tervel.plexus.reports.SymmetrySlice;
 import org.tervel.plexus.reports.TopologyReport;
+import org.tervel.plexus.reports.TrieReport;
 import org.tervel.plexus.reports.VolumeReport;
 import org.tervel.plexus.symmetry.Dihedral;
 import org.tervel.plexus.symmetry.SymmetryGroup;
 
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -34,6 +43,7 @@ public class Main {
     public record Example(int[] grid, int label) { }
 
     public static void main(String[] args) throws IOException {
+        useUtf8Console();
         if (args.length < 1) {
             System.err.println("usage: Main <data-file>");
             return;
@@ -68,6 +78,18 @@ public class Main {
         repl(plexus, inputs, labels);
     }
 
+    /**
+     * Print in UTF-8 regardless of the platform's default console encoding. The reports are full of the
+     * notation the design uses — {@code §}, {@code Δ}, {@code ⊇}, arrows, em-dashes — and on a Windows
+     * console defaulting to a legacy codepage every one of them renders as {@code ?}. Fixing it here rather
+     * than telling the reader to run {@code chcp 65001} keeps the burden on the program, which is the side
+     * that knows what it is about to print.
+     */
+    private static void useUtf8Console() {
+        System.setOut(new PrintStream(new FileOutputStream(FileDescriptor.out), true, StandardCharsets.UTF_8));
+        System.setErr(new PrintStream(new FileOutputStream(FileDescriptor.err), true, StandardCharsets.UTF_8));
+    }
+
     /** Trains a Plexus on the dataset (square domain — frame inferred per grid). */
     static Plexus train(SymmetryGroup group, List<Invariant> invariants, ResidualResolver resolver, List<Example> data) {
         return train(group, invariants, resolver, data, -1, -1);
@@ -96,7 +118,7 @@ public class Main {
 
                                    a node                                  the whole table
                       resolve  ->  [1] stabilizer  [4] grid                [5] score
-                      generate <-  [2] invariant   [3] label  [9] atoms  [s] scale  [p] prime    [6] topology  [7] possibility  [v] volume  [8] diagnose
+                      generate <-  [2] invariant   [3] label  [b] symmetry  [9] atoms  [s] scale  [p] prime    [6] topology  [t] trie  [7] possibility  [v] volume  [8] diagnose  [c] critic
                       [q] quit""");
             System.out.print("> ");
             if (!in.hasNextLine()) return;
@@ -108,9 +130,12 @@ public class Main {
                 case "4" -> queryGrid(plexus, in, side);
                 case "5" -> System.out.println(new ScoreReport(inputs, labels).apply(plexus));
                 case "6" -> System.out.println(new TopologyReport().apply(plexus));
+                case "t" -> System.out.println(TrieReport.census(plexus.store()));
                 case "7" -> System.out.println(new PossibilityReport(inputs).apply(plexus));
                 case "v" -> System.out.println(new VolumeReport(side).apply(plexus));
                 case "8" -> System.out.println(new CollisionDiagnostic(inputs, labels).apply(plexus));
+                case "c" -> System.out.println(new ChainCritic(inputs, labels).apply(plexus));
+                case "b" -> querySymmetrySlice(plexus, in, side);
                 case "9" -> queryDecompose(plexus, in, side);
                 case "s" -> queryScale(plexus, in, side);
                 case "p" -> System.out.println(new PrimeReport(side).apply(plexus));
@@ -133,7 +158,17 @@ public class Main {
             System.out.print("allowed symmetries (e.g. mirrorV; blank = solve from a label):  ");
             final var line = in.nextLine().trim();
             if (!line.isEmpty()) {
-                System.out.println("\n" + new StabilizerQuery(grid, maskOf(plexus.group(), line)).apply(plexus));
+                // Posed mode asks for an EXACT stabilizer, and a stabilizer is a subgroup. A non-closed
+                // request is impossible for any shape, not merely unachieved by this one — say which.
+                final var mask = maskOf(plexus.group(), line);
+                if (!plexus.group().isSubgroup(mask)) {
+                    final var missing = plexus.group().closure(mask) & ~mask;
+                    System.out.println("\nimpossible stabilizer: [" + plexus.group().describe(mask)
+                            + "] is not closed — it forces [" + plexus.group().describe(missing)
+                            + "], which you did not list. No shape has exactly that stabilizer.");
+                    return;
+                }
+                System.out.println("\n" + new StabilizerQuery(grid, mask).apply(plexus));
                 return;
             }
             System.out.print("label to solve for (1/0; blank = the shape's own stabilizer):  ");
@@ -205,6 +240,27 @@ public class Main {
             final var val = Integer.parseInt(parts[1].trim());
             System.out.println("\n" + new SliceReport("contexts with " + col + "=" + val,
                     node -> { final var v = plexus.namedCoords(node.key()).get(col); return v != null && v == val; }).apply(plexus));
+        } catch (RuntimeException e) {
+            System.out.println("bad query: " + e.getMessage());
+        }
+    }
+
+    /**
+     * [b] Slice by surviving symmetry: name the symmetries that must be <em>kept</em> (a partial stabilizer)
+     * and list every full descriptor whose context preserves at least those, regenerating each one's shapes.
+     * Blank asks for nothing, which matches every context and so prints the whole vocabulary.
+     */
+    static void querySymmetrySlice(Plexus plexus, Scanner in, int side) {
+        try {
+            System.out.print("surviving symmetries (e.g. mirrorH; blank = no requirement):  ");
+            final var line = in.nextLine().trim();
+            System.out.print("max shapes to regenerate per context (blank = 4):  ");
+            final var capLine = in.nextLine().trim();
+            final var cap = capLine.isEmpty() ? 4 : Integer.parseInt(capLine);
+            // Blank means "require nothing" — mask 0, not maskOf's implicit identity, so radial contexts
+            // (which carry no stabilizer) are included rather than filtered out by the identity bit.
+            final var mask = line.isEmpty() ? 0 : maskOf(plexus.group(), line);
+            System.out.println("\n" + new SymmetrySlice(mask, side, cap).apply(plexus));
         } catch (RuntimeException e) {
             System.out.println("bad query: " + e.getMessage());
         }

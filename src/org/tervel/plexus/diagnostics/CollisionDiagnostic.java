@@ -109,8 +109,8 @@ public final class CollisionDiagnostic implements Operation<String> {
         }
 
         if (collisions == 0) sb.append("\nNo entropy>0 contexts — the chain resolves every collision.\n");
-        else sb.append(String.format("%nsummary: %d collision(s) — %d irreducible twin(s), %d separable "
-                + "(blueprint emitted).%n", collisions, twins, blueprints));
+        else sb.append(String.format("%nsummary: %d collision(s) — %d irreducible twin(s), %d separable%s%n",
+                collisions, twins, blueprints, blueprints > 0 ? " (blueprint emitted)" : ""));
         return sb.toString();
     }
 
@@ -162,7 +162,7 @@ public final class CollisionDiagnostic implements Operation<String> {
      * some negative grid — then that pair is a genuine symmetry-twin no invariant can split. Disjoint
      * orbits ⇒ separable.
      */
-    private static boolean isProvableTwin(Plexus plexus, List<int[]> pos, List<int[]> neg) {
+    static boolean isProvableTwin(Plexus plexus, List<int[]> pos, List<int[]> neg) {
         final var group = plexus.group();
         final Set<Shape> posShapes = pos.stream().map(g -> Shape.of(g, group)).collect(Collectors.toSet());
         return neg.stream().map(g -> Shape.of(g, group)).anyMatch(posShapes::contains);
@@ -170,9 +170,9 @@ public final class CollisionDiagnostic implements Operation<String> {
 
     // ---- information-gain search over the primitive battery ---------------------------------------
 
-    private record Scored(Primitive primitive, double gain, String partition) { }
+    record Scored(Primitive primitive, double gain, String partition) { }
 
-    private static Scored bestPrimitive(List<int[]> members, List<Integer> ls) {
+    static Scored bestPrimitive(List<int[]> members, List<Integer> ls) {
         final var base = entropy(ls);
         Scored best = null;
         for (final var p : Primitive.battery()) {
@@ -180,10 +180,8 @@ public final class CollisionDiagnostic implements Operation<String> {
             final var buckets = new LinkedHashMap<Long, List<Integer>>();
             for (var i = 0; i < members.size(); i++)
                 buckets.computeIfAbsent(p.quantized(members.get(i)), x -> new ArrayList<>()).add(ls.get(i));
-            var residual = 0.0;
-            for (final var bucket : buckets.values())
-                residual += (double) bucket.size() / members.size() * entropy(bucket);
-            final var gain = base - residual;
+            final var gain = Information.gain(Information.counts(ls),
+                    buckets.values().stream().map(Information::counts).toList());
             if (best == null || gain > best.gain) best = new Scored(p, gain, renderPartition(p, members, ls));
         }
         return best;
@@ -205,17 +203,9 @@ public final class CollisionDiagnostic implements Operation<String> {
     private static double round(double v) { return Math.round(v * 1_000_000.0) / 1_000_000.0; }
     private static String trim(double v)  { return v == Math.rint(v) ? Long.toString((long) v) : String.format("%.3f", v); }
 
-    // ---- Shannon entropy in bits ------------------------------------------------------------------
+    // ---- Shannon entropy in bits (shared with the trie's extension policy) -------------------------
 
-    private static double entropy(List<Integer> ls) {
-        if (ls.isEmpty()) return 0.0;
-        final var ones = ls.stream().filter(l -> l == 1).count();
-        final var p = (double) ones / ls.size();
-        if (p == 0.0 || p == 1.0) return 0.0;
-        return -(p * log2(p) + (1 - p) * log2(1 - p));
-    }
-
-    private static double log2(double x) { return Math.log(x) / Math.log(2); }
+    static double entropy(List<Integer> ls) { return Information.entropy(Information.counts(ls)); }
 
     private static String describe(Plexus plexus, Key key) {
         final var sym = key.radial() ? "(radial)" : "[" + plexus.group().describe(key.symmetry()) + "]";

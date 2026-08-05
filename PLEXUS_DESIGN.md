@@ -12,7 +12,7 @@ The input is a **binary square grid** (an `int[]` of `side²` cells, each 0 or 1
 
 The hard case is **contradictions**: grids labelled *against their own symmetry orbit*. Two shapes can be identical under every symmetry-derived quantity yet carry opposite labels (e.g. one member of an orbit flipped to 0 while its orbit-mates stay 1, or a shape labelled 1 while its rotated copies stay 0). No symmetry quantity can separate such a pair — they are the crux the design must handle honestly rather than smooth over.
 
-> **TODO — domain scope.** The machine reads the grid **frame** (`rows × cols`) from the data's `nxm` header (§2, §8). **Square** domains route under D4 and **rectangular** (non-square) domains under D2 — the routing core (descriptor, context, score, topology) handles both. Still **square-only**: the geometry-heavy reports and ops (`Fiber`, `Shape`, `Scale`, `CellGraph`, the REPL's typed-grid parsing, `CollisionDiagnostic`), which infer a square frame from the cell count and so measure non-square grids wrongly though they do not crash. (Whole-grid rendering itself is frame-aware: `Report.renderGrid` reads the true `rows × cols` off the Plexus.) Multi-valued cells, hexagonal/aperiodic covers, 3-D, and non-grid domains need a different `SymmetryGroup`/lattice and remain unbuilt (§2, `Crystallographic`).
+> **TODO — domain scope.** The machine reads the grid **frame** (`rows × cols`) from the data's `nxm` header (§2, §8). **Square** domains route under D4 and **rectangular** (non-square) domains under D2 — the routing core (descriptor, context, score, topology) handles both. Still **square-only**: the geometry-heavy reports and ops (`Fiber`, `Shape`, `Scale`, `CellGraph`, the REPL's typed-grid parsing, `CollisionDiagnostic`, and the trie's **self-extending** configuration — its orbit test and `Primitive` battery ride `Shape` and `CellGraph`), which infer a square frame from the cell count and so measure non-square grids wrongly though they do not crash. (Whole-grid rendering itself is frame-aware: `Report.renderGrid` reads the true `rows × cols` off the Plexus.) Multi-valued cells, hexagonal/aperiodic covers, 3-D, and non-grid domains need a different `SymmetryGroup`/lattice and remain unbuilt (§2, `Crystallographic`).
 >
 > *Reference datasets (`data/`, one slice-question each — see `data/README.md`): minimal by construction. Each carries only the positive class, plus — for the collision sets — the few negatives that share a context with a positive; the router defaults every unseen key to reject, so the sea of negatives is redundant. The canonical example is the T-tetromino orbit on a 3×3 grid (`conservation-t-orbit-3x3`), with adversarial variants injecting the contradictions above (`twin-t-flip`, `position-corner-dot`). Useful as concrete examples; nothing in the core depends on these numbers.*
 
@@ -29,9 +29,9 @@ score(grid):  grid  ──descriptor──▶  Key  ──▶  Context  ──�
 Two phases:
 
 1. **Resolve** — build a composite routing `Key` from the grid: a *symmetry verdict* refined by a chain of *orthogonal, symmetry-invariant coordinates*.
-2. **Decide** — the `Context` (bucket) the key addresses owns its answer: its **majority label**, overridden by an **exact set of memorised exceptions** (the irreducible contradictions).
+2. **Decide** — the `Context` the key addresses owns its answer: its **majority label**, overridden by an **exact set of exceptions** (the grids whose label contradicts that majority).
 
-Resolution is exact and discrete; the only memory is the exact exception set.
+Resolution is exact and discrete; the only memory is the set of contradicting grids, and self-extension (§5) drives even that down to the irreducible twins.
 
 ---
 
@@ -49,7 +49,31 @@ A shape's symmetry is its **stabilizer** — the subset of the group that fixes 
 
 A shape is **radial** if some non-trivial rotation fixes its centred form (`rotationFixes`) — a round object (dot, plus) with no meaningful orientation. Radial shapes take a different branch (§4).
 
-The group lives in `org.tervel.plexus.symmetry`: `Transform` (one rigid grid→grid map, `extends UnaryOperator<int[]>`, frame-parameterized by `(rows, cols)`), `SymmetryGroup` (stabilizer, canonicalStabilizer, rotationFixes — each with a `(rows, cols)` overload — plus minimalRotation, rotations, describe), `Dihedral.d4()` (square) and `Dihedral.d2()` (rectangle), and `Crystallographic` (the covering/non-covering split).
+### Multiplication: the group computing with itself
+
+Everything above **acts**: it applies transforms to grids, one at a time. Multiplication is the other half — the ability to **name the composite** rather than merely perform it. `rot90 ∘ rot90 = rot180`, `mirrorH ∘ mirrorV = rot180`; the `=` is the content, asserting that the composite is *already in the set* and saying which element it is. With it the group can compute with itself, answering questions about symmetry **sets** with no grid present.
+
+It costs no new geometry, because `Transform.src` already **is** the permutation. From the contract `out[i] = in[src(i)]`:
+
+```
+src_(a∘b)[i] = src_b[ src_a[i] ]
+```
+
+so `multiplicationTable()` reads straight off the existing primitive on a 3×3 probe frame — a scratch pad only, since the group structure is frame-independent (D2 composes identically on a square, so it borrows the same probe). From the table: `compose`, `inverse`, `closure` (the subgroup **generated by** a mask), `isSubgroup`, and `canonicalMask` — the mask-level twin of `canonicalStabilizer`, folding the symmetry *names* by rotation-conjugacy with no grid involved.
+
+**What it is for: telling three kinds of nothing apart.** Ask for a symmetry and get no contexts back, and the answer could mean any of three unrelated things — which the pre-multiplication code reported identically:
+
+| absence | cause | decided by |
+|---|---|---|
+| **impossible** | the mask isn't closed, so it is not a subgroup and *no* shape can have it (`mirrorH` + `mirrorV` without `rot180`) | `isSubgroup` — group algebra alone |
+| **dead spelling** | achievable, but canonicalization always renames it: under D4 `{identity, mirrorV}` is stored as `{identity, mirrorH}` | `canonicalMask` — group algebra alone |
+| **unpopulated** | legal, canonical, askable — this dataset just has none | whatever remains |
+
+The same three-way conflation appeared in two places at once: `SymmetrySlice` returning `0 matching contexts`, and `[1]`'s posed mode reporting an impossible stabilizer as merely unachieved by *this* shape. Both are now explained, and requesting a non-closed set in a *containment* query is repaired rather than rejected — keeping `mirrorH` and `mirrorV` silently means keeping `rot180`, so the slice closes the request and says so.
+
+**Deduce, don't store.** The first two rows are pure group facts: they never read the context table, never touch the data, and are computable from the requested mask alone. This retires a tempting alternative — expanding the stabilizer into one trie level per symmetry bit (§5) so that impossible branches could not exist and dead branches would visibly never be taken. That would have *materialized a derivation*: seven levels of structure caching what four lines of algebra compute on demand. The general principle, and the reason multiplication belongs in the group rather than in the index: **if a distinction follows from the group, derive it at read time; only store what the data decides.**
+
+The group lives in `org.tervel.plexus.symmetry`: `Transform` (one rigid grid→grid map, `extends UnaryOperator<int[]>`, frame-parameterized by `(rows, cols)`), `SymmetryGroup` (stabilizer, canonicalStabilizer, rotationFixes — each with a `(rows, cols)` overload — plus minimalRotation, rotations, describe, and the multiplication surface: multiplicationTable, compose, inverse, closure, isSubgroup, canonicalMask), `Dihedral.d4()` (square) and `Dihedral.d2()` (rectangle), and `Crystallographic` (the covering/non-covering split).
 
 > **TODO — covering domains beyond the rectangle.** Two groups are implemented: `Dihedral.d4()` (square) and `Dihedral.d2()` (rectangle — the transpose-free subgroup, the first realized non-square domain). The remaining **covering** orders — triangle (D3) and hexagon (D6), `Crystallographic.covers` — need a new lattice (the geometry-heavy ops still assume a square `int[]`); the **non-covering** orders — pentagon and beyond, aperiodic/Penrose — provably cannot be a finite `SymmetryGroup` at all (no finite group, no translation to quotient) and belong at the `Scale`/cut-and-project seam. Both are unbuilt, with the boundary, the `φ(n) ≤ 2` criterion, and the reasoning in `Crystallographic`. The injection seam is in place; the alternatives are not.
 
@@ -67,7 +91,7 @@ Each `Invariant` *is* a coordinate map `grid → int` (`extends ToIntFunction<in
 | **MaxDegree** *(opt-in)* | max vertex degree `Δ` (path vs fork) | all shapes |
 | **Position** *(opt-in)* | centre-of-mass quadrant | radial only |
 
-`Signature` is the **two invariant graph quantities bundled into one column** — composed from a separate `Mass` invariant (`V`, cell count) and `Connectivity` invariant (`E`, edge count), wired together in `Main` as `new Signature(new Mass(), connectivity, base)` — the `Connectivity` carries the frame on a rectangular domain, and the packing base is `side` on a square (`rows + cols` on a rectangle, which exceeds any edge count). They are one invariant on purpose — *separately each is blind in one direction* (mass alone admits a shattered blob of equal count; connectivity alone admits a same-structure shape of different size), and only their conjunction pins size **and** structure. The packing `V·W + E` (with `W = maxEdges+1`) is injective, so "same signature" iff "same mass *and* same connectivity"; `Fiber` unpacks the mass back via `Signature.massOf`. Both `V` and `E` are D4-invariant (every rigid transform preserves cell count and adjacency count), so the bundle honours the invariance contract. `Position` is **opt-in** (radial-only); it earns its place only on dot-position contradictions.
+`Signature` is the **two invariant graph quantities bundled into one column** — composed from a separate `Mass` invariant (`V`, cell count) and `Connectivity` invariant (`E`, edge count), wired together in `cli.Main` as `new Signature(new Mass(), connectivity, base)` — the `Connectivity` carries the frame on a rectangular domain, and the packing base is `side` on a square (`rows + cols` on a rectangle, which exceeds any edge count). They are one invariant on purpose — *separately each is blind in one direction* (mass alone admits a shattered blob of equal count; connectivity alone admits a same-structure shape of different size), and only their conjunction pins size **and** structure. The packing `V·W + E` (with `W = maxEdges+1`) is injective, so "same signature" iff "same mass *and* same connectivity"; `Fiber` unpacks the mass back via `Signature.massOf`. Both `V` and `E` are D4-invariant (every rigid transform preserves cell count and adjacency count), so the bundle honours the invariance contract. `Position` is **opt-in** (radial-only); it earns its place only on dot-position contradictions.
 
 ### The bounding box is a structural check, not an invariant
 
@@ -101,7 +125,7 @@ The honest caveat: with only `V` and `E` in the key this is the **unoriented** g
 
 ### Minimality
 
-The chain is **minimal**: one `Signature` drives the exact-memory exceptions down to the irreducible floor — the genuine twins — and richer invariants (components, max-degree) resolve no *further* collision **on the T-orbit reference datasets**, so adding them there would be dead weight (the `separable-path-fork` dataset is the deliberate exception — a path-vs-fork collision that *does* earn `max-degree`). Two axes are therefore implemented but held **opt-in**: `Position` (radial-only) earns its place on radial-position contradictions (the corner-dot case), and `MaxDegree` (`Δ`, all shapes) earns its place on a path-vs-fork collision — the rigorous fix for the `V − E` path reading (above). Minimality is *per dataset*: the optimal chain is the smallest set of group-invariants that reaches the twin floor for the data at hand, so an opt-in axis is added exactly when a collision earns it (and the diagnostic, §3, says which). Lowering the floor itself is impossible (§10.4).
+The chain is **minimal**: one `Signature` drives the exact-memory exceptions down to the irreducible floor — the genuine twins — and richer invariants (components, max-degree) resolve no *further* collision **on the T-orbit reference datasets**, so adding them there would be dead weight (the `separable-path-fork` dataset is the deliberate exception — a path-vs-fork collision that *does* earn `max-degree`). Two axes are therefore implemented but held **opt-in**: `Position` (radial-only) earns its place on radial-position contradictions (the corner-dot case), and `MaxDegree` (`Δ`, all shapes) earns its place on a path-vs-fork collision — the rigorous fix for the `V − E` path reading (above). Minimality is *per dataset*: the optimal chain is the smallest set of group-invariants that reaches the twin floor for the data at hand, so an opt-in axis is added exactly when a collision earns it (and the diagnostic, §3, says which). Lowering the floor itself is impossible (§10.4). With a per-sector `ChainPolicy` (§4) it becomes minimality *per sector as well* — a coordinate can be earned in one symmetry class and dead weight in another, and the chain no longer has to pay for it everywhere.
 
 ### Automated invariant discovery — the collision diagnostic
 
@@ -112,6 +136,30 @@ The chain grows by hand, but **which axis to add is now discovered automatically
 
 The discovery is automated up to the invariance contract (only group-invariant primitives are in the battery); the **implementation** of the chosen axis as an `Invariant` is still manual design work. On the reference T-datasets the diagnostic reports every collision as an irreducible twin (the floor is already reached, confirming minimality); on a dataset where two equal-`(V,E)`, equal-stabilizer shapes of different branching collide, it emits the `max-degree` blueprint with an exact split.
 
+### Vetting a coordinate before it enters the chain — the critic
+
+The diagnostic asks *"is the chain deep enough?"* and proposes an axis. The **chain critic** (`ChainCritic`, menu `[c]`) asks the two questions that come **before** accepting one — aimed at the chain rather than at the data.
+
+**Is each coordinate any good?** A coordinate can fail four ways, and only the first is a correctness bug:
+
+| grade | test | meaning |
+|---|---|---|
+| `ILLEGAL` | `invariantUnder` run as a counterexample search over the group | not orbit-constant on the **oriented** track — orbit-mates route apart and the class shatters |
+| `INERT` | distinct values over the applicable grids | one value: it never splits anything here |
+| `REDUNDANT` | drop it, compare the induced partition | merges nothing — functionally dependent on the rest of the chain |
+| `UNEARNED` | drop it, compare the **collision** count | it splits contexts but separates structures the labels never disagreed about — **minimality (above) made testable** |
+| `DEGENERATE` | mean class size → 1 | an identity column: perfect information gain, zero generalisation — memorisation wearing a coordinate's clothes |
+
+Together: *legal, useful, new, earned, not cheating.* `ORIENTING` is the fifth, non-fault verdict — a coordinate that **does** vary over an orbit but is radial-scoped, i.e. the documented `Position` exception; the critic reports the witness (`under rot90: 0 → 2`) rather than condemning it. The drop-tests are **positional, not by name**, so a chain carrying two same-named coordinates does not misreport each as redundant. Note the limit of one-at-a-time ablation: duplicate a coordinate and *both* copies grade `REDUNDANT` — each is individually droppable, though not both.
+
+**At each collision, is extending even possible?** Three outcomes, and the first is what makes the tool worth trusting — it says when *not* to bother:
+
+- **IRREDUCIBLE** — same orbit. The chain is not the problem; no orbit-constant invariant can ever separate orbit-mates (§10.4). Memory is forced. *Unless the context is `radial`*, which has no orientation to protect — there an orientation-scoped axis (`Position`) can still split it, and the critic says so. That is the one twin verdict with a way out.
+- **SEPARABLE, battery has it** — name the winning column and its split (exact or partial; the diagnostic reports a "winner" even at zero gain, the critic distinguishes the cases).
+- **SEPARABLE, battery is empty** — disjoint orbits guarantee a separating invariant exists, but nothing in the battery finds it. The critic renders both sides as **shapes** so the human has something to look at rather than two integers, and the new primitive is then vetted by the table above *before* admission rather than after.
+
+Grades exercised by the reference datasets: `OK`, `INERT`, `REDUNDANT`, `ORIENTING`. `UNEARNED` and `DEGENERATE` are not reachable on them — those sets are orbit-narrow (even a canonical-shape hash takes only two values on the 9×9 path/fork data, and is graded `OK`, correctly).
+
 ---
 
 ## 4. The composite key
@@ -120,9 +168,9 @@ The descriptor is one resolution, with no fixed key budget. The symmetry verdict
 
 ```java
 Key descriptor(int[] g) {
-    final var radial = isRadial(g);
-    final var coords = invariants.stream().filter(d -> d.applies(radial)).map(d -> d.applyAsInt(g)).toList();
-    return radial ? new RadialKey(coords) : new OrientedKey(group.canonicalStabilizer(g, rows(g), cols(g)), coords);
+    final var sector = sector(g);                    // (radial verdict, canonical stabilizer)
+    final var coords = chainFor(sector).stream().map(d -> d.applyAsInt(g)).toList();
+    return sector.radial() ? new RadialKey(coords) : new OrientedKey(sector.stabilizer(), coords);
 }
 ```
 
@@ -138,36 +186,141 @@ Key descriptor(int[] g) {
      └── Signature         └── canonical stabilizer
 ```
 
-`Key` is a **sealed interface** `permits RadialKey, OrientedKey`; each is a record, so value equality (record + `List.equals`) still makes it a `Map` key. Crucially, the two tracks are **decoupled into two context tables** (`Map<RadialKey,Context>`, `Map<OrientedKey,Context>`); `contextFor` dispatches a key to its table by a compile-time `switch` over the permits, never mixing the two coordinate layouts. This is what keeps each coordinate table **perfectly uniform within its track** — the radial-only `Position` column can no longer hang ragged off an oriented key, because oriented keys are a different type with no such field. The **default chain is a single `[Signature]`** — mass and connectivity packed into one invariant column, which hits the exception floor on every dataset except the corner-dot set, where the lone radial-position contradiction costs one extra memorized exception. `Position` is an **opt-in** axis (radial-only); add it for datasets with dot-position contradictions. Two shapes route to the same context iff they are the same track **and** agree on **every** applicable axis. (Reports read keys through the shared `radial()` / `symmetry()` / `coords()` accessors, so the whole-table walk is unchanged; `symmetry()` is 0 on the radial track, which has no orientation.)
+`Key` is a **sealed interface** `permits RadialKey, OrientedKey`; each is a record, so value equality (record + `List.equals`) still makes it a `Map` key. Crucially, the two tracks are **decoupled in storage** — the store keeps a separate root per track and a lookup never crosses between them, so the two coordinate layouts never mix. This is what keeps each coordinate table **perfectly uniform within its track** — the radial-only `Position` column can no longer hang ragged off an oriented key, because oriented keys are a different type with no such field. The **default chain is a single `[Signature]`** — mass and connectivity packed into one invariant column, which hits the exception floor on every dataset except the corner-dot set, where the lone radial-position contradiction costs one extra memorized exception. `Position` is an **opt-in** axis (radial-only); add it for datasets with dot-position contradictions. Two shapes route to the same context iff they are the same track **and** agree on **every** applicable axis. (Reports read keys through the shared `radial()` / `symmetry()` / `coords()` accessors, so the whole-table walk is unchanged; `symmetry()` is 0 on the radial track, which has no orientation.)
+
+### Sectors: the two tracks generalized
+
+The radial/oriented split is not really about *values* — it is about **vocabulary**. Radial drops the stabilizer column and admits `Position`, which is illegal on the oriented track: different columns, not different numbers. Once you see it that way, two tracks looks like an arbitrary stopping point, and orbit–stabilizer says why:
+
+```
+|orbit| = |G| / |Stab|
+```
+
+A coordinate is legal iff it is constant on an orbit (§3), so it must agree on `|G|/|Stab|` grids. **More symmetry ⇒ smaller orbit ⇒ weaker constraint ⇒ more coordinates become legal** — and at full symmetry the orbit is a single grid, where *any* function of it is trivially orbit-constant. The legal vocabulary grows monotonically up the subgroup lattice:
+
+| stabilizer | orbit | what a coordinate must agree across |
+|---|---|---|
+| trivial | 8 | 8 grids — strictest |
+| one mirror | 4 | 4 |
+| Klein four | 2 | 2 |
+| full D4 | 1 | nothing — anything is legal |
+
+So the chain is selected per **`Sector`** — `(radial, canonicalStabilizer)` — by an injected **`ChainPolicy`**, a peer of the group, chain, and resolver. `ChainPolicy.uniform()` is the historical behaviour exactly (one chain, gated only by the radial verdict), so this is a strict generalization: every reference measurement is unchanged under it.
+
+Three things make it safe:
+
+- **Sectors are unions of whole orbits.** Orbit-mates have conjugate stabilizers, hence the same canonical mask, hence the same sector and the same chain — selecting by sector can never shatter a class. *Measured: 0 shattering events over 96 (grid, transform) pairs.*
+- **Every key determines its sector**, so `chainFor(key)` recovers the coordinates behind any stored key — which is what lets the reports, `ThreadVolume`, and the trie keep reading keys they did not construct.
+- **Radial stays a single sector** on purpose. Subdividing it would need the stabilizer inside `RadialKey`, which drops it deliberately; without that column two radial sectors running different chains could emit equal coordinate lists and silently merge.
+
+`ChainPolicy.byOrbit(group, maxOrbit, withheld)` is the shipped non-uniform example: it **withholds** coordinates from low-symmetry sectors rather than appending them to rich ones. Withholding matters twice — appending would list a declared coordinate twice in the rich sectors, and rebuilding by filtering the declared list preserves chain **order**, which is load-bearing because chain order is the trie's rung order (§5).
+
+Measured on `renormalization-path-fork-9x9`, withholding `max-degree` below orbit 4:
+
+```
+[identity]             orbit=8   chain=[sig]        → sig=583           pos=5 neg=6   ← collision returns
+[identity, mirrorH]    orbit=4   chain=[sig, deg]   → sig=583 deg=3     pos=1 neg=0
+```
+
+Note the honest cost: the trivial sector, deprived of `deg`, gets its collision back. A per-sector chain is not a free win — it is a decision about **where to spend coordinates**, and spending them only where symmetry makes them cheap means not spending them where the data needed them. Minimality (§3) is now a per-sector question rather than a global one.
+
+The trie absorbs this without losing laziness, because the stabilizer is its first edge: by the time the walk needs an invariant, the stabilizer has already named the sector, so the chain is known exactly when it is first required. (An early pure-stop above that edge reports the declared depth as an upper bound — exact under `uniform`.)
 
 ---
 
 ## 5. The context: majority + exact exceptions
 
-A `Context` (bucket) is the leaf, and it **owns its own decision**:
+A `Context` is the **view a leaf projects**, and it owns its own decision:
 
 ```java
 record Context(long[] counts, List<int[]> exceptions) {
     int     answer()        { return counts[1] > counts[0] ? 1 : 0; }   // majority label
-    boolean isException(g)  { ... exact match in the store ... }
+    boolean isException(g)  { ... exact match among the dissenters ... }
 }
 ```
+
+It is materialised on demand rather than stored, and `exceptions` is **derived**: a member is one exactly when its own recorded majority contradicts its leaf's, both read from live counts (see *Why training is one pass*, below).
 
 - `accept` counts each example into its context.
 - `score` routes to the context, then delegates the leaf decision to the injected `ResidualResolver` (below). The default returns the context's **majority answer**, flipped iff the grid is a memorised exception.
 - A context with no positive majority is a *reject*; an unseen key defaults to 0.
 
-The **exception store** is the irreducible pixel-level memory for **symmetry-twin contradictions** — shapes that share every symmetry-derived quantity with an oppositely-labelled shape (provably irreducible: no symmetry feature can separate them). It memorises *only* those, so the contradiction count equals the number of genuine twins and nothing more. A genuine twin is a *different grid* and is never in the store, so it can **never be over-flipped** — the exact match is robust by construction.
+`score` collapses two different facts onto that `0` — *"routed to a context whose answer is negative"* and *"no example ever routed here"* — so `verdict` returns the three-state `Verdict` enum (`POSITIVE / NEGATIVE / UNSEEN`) instead, at the cost of nothing (same single lookup, it just declines to spend the reject signal). `score` remains for the scoring surface, which wants a bit. The distinction is not cosmetic: the `Searcher` (§6) sweeps the group testing each image against a target, and under `score` a `target = 0` sweep counted **never-explored** transforms among a grid's *surviving* symmetries — absence of evidence reported as evidence of the label. Matching on `verdict` makes broken / surviving / unseen a genuine partition of the group.
 
-### Sealing is a post-pass
+The exceptions are the **pixel-level memory for whatever the chain could not resolve** — every grid whose label contradicts the majority of the context it routed to. Some of those contradictions are irreducible symmetry-twins (an oppositely-labelled shape sharing every symmetry-derived quantity, which no invariant can separate); others are merely collisions a richer chain *could* have split, and telling the two apart is exactly what the collision diagnostic (§3) is for. On `renormalization-path-fork-9x9` the default chain derives five exceptions and **zero** twins: the path/fork collision is separable, so those five are reducible and a deeper chain removes them, which is precisely what self-extension does (§5, the trie). An oppositely-labelled twin is a *different grid* and never matches, so a member can **never be over-flipped** — the exact match is robust by construction.
 
-Exceptions are sealed **after** all counts are in. An exception is a grid whose label contradicts its context's **converged** majority; it cannot be detected online (a grid fed while counts are immature would be falsely flagged, a real exception fed early would be missed). So `fit(grids, labels)` takes the dataset once and runs two internal passes — count, then seal.
+### Why training is one pass
+
+It used not to be. An exception is a grid whose label contradicts its context's **converged** majority, and while the exception list was *stored*, that could not be known early — a grid fed while counts were immature would be falsely flagged, and a real exception fed early would be missed. So `fit` ran twice over the data: count, then seal.
+
+That constraint belonged to the **storage, not the problem**. A leaf that keeps its members derives the same contradictions at read time — a member is an exception exactly when its own recorded majority contradicts its leaf's, both read from live counts — so a later insert that flips a majority flips every derived exception with it, atomically. Nothing is frozen, so nothing can go stale: `fit` is one pass and `accept` is legal at any point afterwards.
+
+Removing the frozen list also removed a defect it carried. A grid seen under **both** labels was sealed once per contradicting *example*, which made `isException` true and flipped it away from the label it mostly carried — a grid 3:2 in favour of `1` answered `0`. Comparing majorities answers it `1`. (`TrainingTest` pins both the online property and this regression.)
 
 ### The residual boundary: where routing ends and you brute-force or learn
 
 Routing is **exact and deterministic up to the twin floor** (§10.4) — symmetry plus the invariant chain place every grid in a context by pure structure. But two symmetry-twins share *every* group-derived quantity by proof, so the group algebra has nothing left to say about which one is which. That is the **residual**: the incompressible signal outside the symmetry algebra (§11, "entropy = log|fiber|"). This marks the exact theoretical line where **structural routing reverts to memorisation** — and resolving the residual is no longer routing, it is whatever you bring to bear (an exact lookup, a brute-force search, a learned net).
 
-The code makes that line a seam. A `Plexus` routes a grid to its `Context` — the most structure can do — then delegates the intra-context leaf decision to a **`ResidualResolver`** (`org.tervel.plexus.residual`). The resolver is **injected at construction**, a peer of the symmetry group and the invariant chain — `Main` constructs all three and passes them in (`new Plexus(group, invariants, resolver)`); there is no hidden default. The one that ships is **`ExactExceptions`**, the deterministic floor described above: majority, flipped iff the grid is a memorised exception — exact on seen contradictions, never over-flips. A resolver only ever decides *within one already-routed context*, reached only after structure is exhausted, so it can never corrupt the deterministic routing — only fill the part the routing provably cannot. Injecting a brute-force or learned resolver instead (one that **predicts** the residual rather than memorising it, generalising to unseen twins) changes nothing structural; it only replaces this one leaf function.
+The code makes that line a seam. A `Plexus` routes a grid to its `Context` — the most structure can do — then delegates the intra-context leaf decision to a **`ResidualResolver`** (`org.tervel.plexus.residual`). The resolver is **injected at construction**, a peer of the symmetry group and the invariant chain — `cli.Main` constructs all three and passes them in (`new Plexus(group, invariants, resolver)`); there is no hidden default. The one that ships is **`ExactExceptions`**, the deterministic floor described above: majority, flipped iff the grid is a memorised exception — exact on seen contradictions, never over-flips. A resolver only ever decides *within one already-routed context*, reached only after structure is exhausted, so it can never corrupt the deterministic routing — only fill the part the routing provably cannot. Injecting a brute-force or learned resolver instead (one that **predicts** the residual rather than memorising it, generalising to unseen twins) changes nothing structural; it only replaces this one leaf function.
+
+### The chain as a trie (`org.tervel.plexus.trie`)
+
+A hash table keyed on whole tuples stores only the **full** key; every coarser routing — "all shapes with this stabilizer", "…and this signature, ignoring the rest of the chain" — has to be recomputed by regrouping whenever a report wants it. `Trie` stores keys as **paths** instead — the track root, then the stabilizer edge (oriented track), then one edge per chain coordinate — so every **prefix is a live node** holding the merged `[neg, pos]` counts of its whole subtree. A depth-`k` node *is* the context you would have if the chain stopped at its `k`-th coordinate.
+
+This **is** the router's store: `Plexus` holds a `Trie`, and `Context` is a view materialised from a leaf on demand rather than a bucket kept in a map. `contexts()` is therefore a **projection** — leaves walked in a deterministic order and reassembled into the `Key` whose path reaches them — which is what lets every report keep reading the same `Key`/`Context` surface while the storage underneath keeps paths. What follows is what the prefixes turned out to buy, and, measured honestly, what they don't.
+
+**Training is the walk.** One example = walk down the symmetries, bump the answer at every node passed. The write side has no laziness — an example must land at its exact leaf — and that full walk touches every rung a read will ever consult, so every prefix count and every purity verdict stays fresh *by construction*. The leaf keeps its **members** (per exact grid, that grid's own `[neg, pos]`), and whether a member is an exception is **derived at read time** — member majority vs leaf majority, both live counts. This is what dissolves the sealing constraint (above), and it is why `fit` is one pass. The price is memory: in the `GRIDS` configuration every distinct training grid is held at its leaf, which is strictly more than an exception-only store would keep. That was once a genuine trade — batch-and-frozen against online-and-member-heavy — but the `DESCRIPTORS` configuration below settles it, because merging members by descriptor and growing an edge where a collision is separable can take the stored total **below** what memorising exceptions cost.
+
+**Reading is the same walk, lazy.** Each coordinate (stabilizer, then chain) is computed only when its edge is needed, and the descent **stops at the first pure node** — one-sided counts mean no deeper coordinate can change the answer, so the remaining invariants are never evaluated. A pure node can hold no contradiction (an exception is a within-leaf contradiction, which would make every ancestor impure), so the early answer equals the full walk's answer on every seen key. The price is the **reject signal**: a pure-stop cannot tell a seen key from an unseen one that agrees up to the stop — the deep walk was never computing the answer, it was *verifying novelty*, and laziness spends exactly that.
+
+**Backoff — a measured negative result.** The pitch: on an unseen key, answer from the deepest seen ancestor's majority instead of rejecting — coverage degrading rung by rung. Measured (hold out every example of one key, refit, query): systematically **wrong** on the reference datasets, worse than blind reject. The reason is minimality itself (§3): an invariant enters the chain only when the collision diagnostic proves it flips labels *within* a prefix bucket — so the deepest rung is always load-bearing, and the prefix majority is anti-correlated exactly where the full key matters. **A minimal chain has maximally treacherous prefixes.** Backoff pays only where labels are smooth along the chain, i.e. where the chain is over-provisioned; on data that earned every coordinate, the coarser context is precisely the wrong thing to trust.
+
+**Twins force the full walk.** A twin contradiction at a leaf makes every ancestor impure — impurity propagates to the root — so pure-stop never fires on that spine: the twins' key-mates pay every rung *plus* the member lookup, and shapes sharing any prefix with the twins cannot stop until they step off it. The member lookup is really the chain's final coordinate: the **raw grid itself** — the identity invariant, infinite resolution, zero compression. Twins collide on every honest coordinate by proof (§10.4), so bit-for-bit identity is all that remains; the full walk is the twin theorem enforced at runtime.
+
+**The prefixes are visible — the census.** `[t] trie` (`TrieReport`, §8) prints the store's own shape, which the context view cannot: contexts are the leaves, while the store also holds every prefix. Per rung it counts the nodes, how many are already label-pure, and how many are **redundant** — their parent was pure, so that rung's coordinate decided nothing for them and a radix merge would collapse them upward. Measured on `rect-bar-2x4` (asserted by `TrieTest.censusExposesRedundantRungs`):
+
+```
+  oriented track  (7 examples)
+    depth  rung               nodes    pure  redundant
+    0      (all oriented)         1       0          0
+    1      stab                   3       2          0
+    2      sig                    5       5          2
+```
+
+Two of the three stabilizer nodes are already pure, so the signature rung below them decided nothing — the compression the prefixes expose, read off rather than asserted.
+
+### Self-extension: the second configuration
+
+Everything above is `Trie` with an **empty extension vocabulary** and members kept as **grids**. Both are constructor knobs, not separate structures, because a self-describing trie whose axes happen to all be structural *is* the fixed-chain one. Turning them on changes two things, and they are one change seen from two sides.
+
+**Descriptor memory instead of pixel memory.** Store each member's **coordinate vector** (the battery's outputs, plus the canonical `Shape` — the complete orbit invariant) instead of the grid, keyed so identical descriptors collapse: a twin leaf becomes one row with counts `[7,1]`, not eight grids. Everything the store is *for* survives, because the grid was never what was needed:
+
+- **Splitting** reads a column, not a shape. Redistribution on extension is a table scan over kept measurements.
+- **Twin detection becomes a local property**: rows differing in some column ⇒ separable, split on it; a single row with mixed counts ⇒ nothing in the battery separates them.
+- **Regeneration** for the human is `Fiber` — the descriptor run backwards (§6). It is *not* unique (`entropy = log|fiber|`), but any legal invariant is orbit-constant, so it **cannot depend on which representative comes back**: the part destroyed (which pose) is exactly the part no future coordinate is permitted to use. Lossless in the only sense that matters — provided the vector pins the orbit (a canonical-form column), or the fiber spans several orbits and a representative may evaluate differently from the original.
+
+**What is surrendered, precisely.** A member answers with its **own** recorded majority whenever its descriptor is distinct — so exact recall survives for everything the descriptor can tell apart, *including* collisions no battery column splits. It is lost only where two grids share every battery value **and** the same canonical orbit: the provable symmetry-twins (§10.4), which are exactly the set no invariant could ever separate. **The memory the design gives up is exactly the memory the theorem says is irreducible.** The price is that the battery is evaluated on every insert, not merely on collision — the grid is gone afterwards, so the measurements cannot be taken later.
+
+**Growing the chain at insert instead of memorising.** The diagnostic runs as a batch post-pass emitting a blueprint for a human. But the moment a collision is *knowable* is the insert that causes it — the write walk is already computing every coordinate and is standing at the exact leaf, holding both colliding members. So `add` finishes by asking the leaf whether it can split: if some `Primitive` column separates the labels (information gain > 0), the leaf grows **one edge under itself only** and pushes its members into children (n-ary — as many children as distinct values, redistributed by *reading a column*, since the grids are gone); if nothing separates, the contradiction is genuinely irreducible and stays. Termination is structural: redistribution makes every child constant in the chosen column, so that column scores zero gain below and is never chosen twice on a path. The two halves of that decision live at different levels on purpose: *which column* is an injected **`ExtensionPolicy`** — the third seam, beside the symmetry group and the residual resolver; the shipped rule maximises information gain (`Information`, the same arithmetic the batch diagnostic scores the battery with) and declines at zero — while the twin verdict is the structure's own orbit test, run *before* any policy is consulted, because it is a theorem (§10.4) rather than a preference.
+
+This forces the structure to be **self-describing** — each node carries the `Axis` its children are keyed by, rather than depth-indexing a global chain. That is the trie's real justification, and it is neither backoff nor laziness: **extension is local**, one node deepens and nothing else moves. A fixed-width key cannot do it even in principle, since adding a coordinate reshapes every key in the table at once.
+
+**Measured** (`Trie.growing(...)`, declared chain a single `Signature`, extension vocabulary the `Primitive` battery; asserted by `TrieTest.documentedExtensionResults`):
+
+| dataset | flat sealed | trie rows | irreducible | extensions |
+|---|---|---|---|---|
+| `conservation-t-orbit` | 0 | 1 | 0 | 0 |
+| `entropy-fiber-gap` | 0 | 1 | 0 | 0 |
+| `separable-path-fork` | 1 | 2 | **0** | **1** |
+| `renormalization-path-fork-9x9` | **5** | 3 | **0** | **1** |
+| `twin-t-flip` | 1 | 1 | **1** | 0 |
+| `position-corner-dot` | 1 | 1 | **1** | 0 |
+
+The headline is the 9×9 row: the fixed chain derives **five** exceptions; with extension turned on there are **none**, because the battery discovered `max-degree` at insert and grew one edge. Where a collision was separable, memory went to zero; where it was a provable twin, exactly one row survived. **Memory shrank to the twin floor and no further** — which is the design's claim, now measured rather than asserted.
+
+Two consequences to accept: a primitive chosen from a thin collision is under-determined (vet it with the critic, §3), and the key stops being global — routing is path-dependent, decided edge by edge, so reports reading `Key.coords()` uniformly would have to read paths instead. This is the **Complexus** direction (§11), with the trie as its substrate.
+
+**Path length = description length.** The lazy walk's evaluation count is a per-query meter of how much structure the answer depends on, and it stratifies the dataset's truth by **law-likeness**: a pure-stop at depth 0 is a law of the whole domain (the label depends on nothing about the shape); depth 1, a law of symmetry ("the stabilizer decides"); depth `k`, a label that factors through the `k`-quotient; full walk + member lookup, a residual **fact** whose shortest description is itself. Shorter path = coarser quotient = larger fiber covered per bit of memory = the better compression (§11, "the law is a compression") — and a prediction of **renormalization stability**, since a shallowly-resolved label cannot depend on the fine detail that coarse-graining destroys first (§11, change of scale). The epistemic caveat is the flip side: purity is a claim about the *sample*, not the space, so a short path is either a law or unsampled territory — indistinguishable from inside — and the shortest paths make the grandest claims on the thinnest per-shape evidence. What redeems the bet is the walk itself: every insert that passes through a pure node without flipping it re-tests the law for free.
 
 ---
 
@@ -176,19 +329,22 @@ The code makes that line a seam. A `Plexus` routes a grid to its `Context` — t
 The descriptor is a map `D : grids → keys`. Classification runs it forward; the **`Searcher`** runs the symmetry direction backward. Given an `input` grid and a `target`, it sweeps the group and yields the transforms whose image the Plexus classifies as `target`:
 
 ```java
-group.transforms().stream().filter(t -> plexus.score(t.apply(input)) == target)
+group.transforms().stream().filter(t -> plexus.verdict(t.apply(input)) == target)
 ```
 
 The group is the search space. It reads out an input's symmetry structure directly:
 
-- `target = 1` on an exception → its **broken** symmetries (transforms that turn it into a genuine, positively-classified grid),
-- `target = 0` → its **surviving** symmetries (under which it stays the exception).
+- `POSITIVE` on an exception → its **broken** symmetries (transforms that turn it into a genuine, positively-classified grid),
+- `NEGATIVE` → its **surviving** symmetries (under which it stays the exception),
+- `UNSEEN` → the transforms that carry it **off the trained map** entirely.
 
-For a flipped orbit-member it returns the broken transforms (those that map it onto a genuine positive) against the surviving ones (under which it stays the exception) — the broken/surviving partition, in the object's own frame.
+Matching on `verdict` rather than `score` is what makes those three a genuine **partition** of the group (§5): under `score` the reject and the negative class share the value `0`, so a `target = 0` sweep counted never-explored transforms among the surviving symmetries. For a flipped orbit-member it returns the broken transforms (those that map it onto a genuine positive) against the surviving ones — the broken/surviving partition, in the object's own frame, with the unexplored remainder named rather than absorbed.
+
+**Why it is ever non-trivial.** If the chain is orbit-constant (§3) and no exception is involved, every image routes to the input's own context and the sweep returns all of the group or none of it. It resolves to something in between exactly where orbit-constancy is *deliberately* broken — the exception store (which matches raw grids, so an image can be a memorised exception when the input is not) and the radial-only `Position`. The Searcher is therefore the instrument that measures **where the quotient leaks**: it reads out the pose-dependence routing normally folds away. (`UNSEEN` is all-or-nothing for a legal chain, since unseen-ness is a property of the key and the key is orbit-constant.)
 
 ### The fibration: classify and generate
 
-`D : grids → keys` is a fibration. Classification runs it forward; **generation samples its fibers** `D⁻¹(key)`. A trie node *is* a generator of its members — defined by the constraint conjunction (stabilizer ∩ mass ∩ connectivity ∩ position), not by a stored list, so the fiber includes members never trained on. The label splits the fiber: majority members vs the exception twins.
+`D : grids → keys` is a fibration. Classification runs it forward; **generation samples its fibers** `D⁻¹(key)`. A **context** *is* a generator of its members — defined by the constraint conjunction (stabilizer ∩ mass ∩ connectivity ∩ position), not by a stored list, so the fiber includes members never trained on. The label splits the fiber: majority members vs the exception twins. ("Context" is the view a leaf projects; "node" is reserved for the trie itself.)
 
 ### A shape as itself, and the two fibrations (`Shape`)
 
@@ -229,45 +385,48 @@ This is the realisation of "do the reference-frame work once": translation is fa
 
 ## 7. Operations and packages
 
-`Operation<T> extends Function<Plexus, T>` is the spine: a unary function consuming a Plexus. Reports are `Operation<String>` (`Report`); the two inverse directions are both Operations — the `Searcher` is `Operation<Iterator<Transform>>`, the `Fiber` is `Operation<Stream<int[]>>`.
+`Operation<T> extends Function<Plexus, T>` is the spine: a unary function consuming a Plexus. It is a **naming** interface rather than a dispatch point — eighteen classes implement it (nine operations directly, nine reports through `Report`) and nothing accepts an `Operation<?>` as a parameter — so it earns its place by fixing the shape a new operation must take, not by enabling polymorphism. Reports are `Operation<String>` (`Report`); the two inverse directions are both Operations — the `Searcher` is `Operation<Iterator<Transform>>`, the `Fiber` is `Operation<Stream<int[]>>`.
 
 ```
 org.tervel.plexus
-├── Plexus              router + Key/Context (the classifier)
+├── Plexus              router + Key/Context (the classifier), Sector + ChainPolicy (per-symmetry-class chains, §4)
 ├── Operation<T>        Plexus → T
-├── Main                the interpreter (parse, train, REPL)
-├── RenormalizationLoopRunner   the two-scale closure loop (§11, change-of-scale derivation)
-├── SultanRunner        optimal-stopping demo: utility × strategy over the contexts (§11, deciding without the volume)
 ├── symmetry/           Transform, SymmetryGroup, Dihedral (d4 square / d2 rectangle), Crystallographic (covering split), Shape   (the principled core)
 ├── invariants/         Invariant, Mass+Connectivity composed into Signature, MaxDegree, Position  (injected refiners)
 ├── residual/           ResidualResolver (the boundary seam), ExactExceptions (deterministic default)
+├── cli/                Main — the interpreter (parse, train, REPL). The only main() in the tree, and outside the library core: the CLI depends on the router, never the reverse (§8)
+├── trie/               Trie (self-describing paths; lazy pure-stop reads, online walk-as-update writes), Axis, Member (Grid / Descriptor), Resolution, ExtensionPolicy (the collision decision, injected)  — §5
 ├── ops/                Searcher (symmetry sweep), Fiber (descriptor-fiber), ThreadVolume (the thread's volume = determinant), Decompose (shape→atoms), Scale (block-decimation / change-of-scale), PrimeFrame (frame arithmetic: prime = scale-rigid), Topology (the automaton)
-├── diagnostics/        CollisionDiagnostic (auto invariant discovery), Primitive battery, CellGraph
-├── reports/            Report, ScoreReport, TopologyReport, PossibilityReport, VolumeReport, PrimeReport, SliceReport, StabilizerQuery, GridQuery
+├── diagnostics/        CollisionDiagnostic (auto invariant discovery), ChainCritic (vet a coordinate; extend-or-stop per collision), Information (entropy + information gain, shared with the trie), Primitive battery, CellGraph
+├── reports/            Report, ScoreReport, TopologyReport, TrieReport (the store's prefix census), PossibilityReport, VolumeReport, PrimeReport, SliceReport, SymmetrySlice, StabilizerQuery, GridQuery
 └── utility/            Utility (payoff), Strategy (safe↔risky dial, dowry = neutral), OptimalStop (secretary harness)  (§11, deciding without the volume)
+
+test/                   the suite: group axioms, orbit-constancy, the context projection, online training,
+                        the trie's two configurations, the critic's grades, and the two §11 experiments
+                        (renormalization closure, the optimal-stopping dial) — asserted, not printed
 ```
 
 Each menu operation is a first-class `Report`, and most are **consumers of one automaton**. They sort onto the **same two axes as the menu** (§8) — the classify/generate direction × the node/table scope:
 
 - **Resolve → / the whole table:** `ScoreReport` judges the whole router (confusion / MCC).
-- **Generate ← / the whole table:** `Topology` walks the key trie and hands each `(symmetry-break, context)` node to an injected consumer, so `TopologyReport` (print counts), `PossibilityReport` (enumerate + label each node's descriptor-fiber), and `VolumeReport` (measure each fiber's volume five ways and check the orbit-stabilizer identity, §11) are node-functions over the same walk. `CollisionDiagnostic` (find separable collisions, emit invariant blueprints) is the same scope but stands apart from the walk: it needs per-grid labels, which a context's counts don't carry, so it regroups the labelled examples by descriptor directly.
-- **Generate ← / a node:** `SliceReport` filters that walk to a partial key — by invariant or by label; `Decompose` factors a single shape into its atoms (the decomposition direction, §9), and `Scale` block-decimates a single grid into a coarser one (the change-of-scale direction, §11) — its sibling fold.
+- **Generate ← / the whole table:** `Topology` walks the context table and hands each `(symmetry-break, context)` node to an injected consumer, so `TopologyReport` (print counts), `PossibilityReport` (enumerate + label each node's descriptor-fiber), and `VolumeReport` (measure each fiber's volume five ways and check the orbit-stabilizer identity, §11) are node-functions over the same walk. `CollisionDiagnostic` (find separable collisions, emit invariant blueprints) is the same scope but stands apart from the walk: it needs per-grid labels, which a context's counts don't carry, so it regroups the labelled examples by descriptor directly. `ChainCritic` (§3) shares that regrouping and adds the ablation pass — drop each coordinate, re-derive the partition and the collision count — so it grades the chain rather than the data.
+- **Generate ← / a node:** `SliceReport` filters that walk to a partial key — by invariant or by label; `SymmetrySlice` takes the complementary slice, fixing the **symmetry** column instead of a coordinate: name the symmetries that must *survive* (a partial stabilizer, matched by subgroup containment) and it lists every full descriptor that keeps them and regenerates each one's fiber; `Decompose` factors a single shape into its atoms (the decomposition direction, §9), and `Scale` block-decimates a single grid into a coarser one (the change-of-scale direction, §11) — its sibling fold.
 - **Resolve → / a node:** `StabilizerQuery` poses a shape and lists its sibling breaks, or solves a stabilizer from a label; `GridQuery` resolves one exact placement.
 
 The two inverse directions live apart as the operations behind the headline cells: `Searcher` is the symmetry sweep (broken/surviving), `Fiber` is the descriptor-fiber enumeration.
 
-The split: **symmetry is the principled, group-theoretic core**; **invariants are swappable heuristics** whose only obligation is the invariance contract; **the residual resolver owns what structure can't decide**; **the context owns its majority**; **the Plexus only routes**. `Main` constructs `(group, invariants, resolver, data)` separately, so a dataset is loaded once and different invariant chains — or residual policies — tried on it.
+The split: **symmetry is the principled, group-theoretic core**; **invariants are swappable heuristics** whose only obligation is the invariance contract; **the chain policy owns which sector routes on what**; **the residual resolver owns what structure can't decide**; **the context owns its majority**; **the Plexus only routes**. `cli.Main` constructs `(group, invariants, resolver, data)` separately, so a dataset is loaded once and different invariant chains — or chain policies, or residual policies — tried on it.
 
 ---
 
 ## 8. The interpreter
 
-`Main <data-file>` loads the dataset (path from the argument), infers the grid **frame** (`rows × cols`) from the `nxm` header — routing square domains under D4 and rectangular ones under D2 — trains, and drops into a REPL:
+`cli.Main <data-file>` loads the dataset (path from the argument), infers the grid **frame** (`rows × cols`) from the `nxm` header — routing square domains under D4 and rectangular ones under D2 — trains, and drops into a REPL:
 
 ```
                  a node                                   the whole table
   resolve  →   [1] stabilizer  [4] grid                   [5] score
-  generate ←   [2] invariant   [3] label  [9] atoms  [s] scale  [p] prime   [6] topology  [7] possibility  [v] volume  [8] diagnose
+  generate ←   [2] invariant   [3] label  [b] symmetry  [9] atoms  [s] scale  [p] prime   [6] topology  [t] trie  [7] possibility  [v] volume  [8] diagnose  [c] critic
   [q] quit
 ```
 
@@ -311,16 +470,19 @@ So the headline `by stabilizer` query sits in the resolve/node cell as the **sum
 
 - **[2] by invariant** — pin one break column by its `name()` (`sig=167`, or `quadrant=0` when `Position` is in the chain); list the matching contexts. Mass and connectivity are packed inside `sig`, so they are queried through it, not as separate columns. (`SliceReport`)
 - **[3] by label** — pin the answer (`1`=TARGET / `0`=reject); list the matching contexts. (`SliceReport`)
+- **[b] by symmetry** — the complement of [2]: pin the **symmetry** column instead of a coordinate. Name the symmetries that must *survive* (a partial stabilizer) and it lists every full descriptor whose context keeps them, then regenerates each one's fiber. The match is subgroup **containment** (`stab & required == required`), so an under-specified request is legitimate — ask for `mirrorH` and you get everything that keeps it, whatever else it also keeps. A non-closed request is **repaired**, not rejected: a stabilizer is a subgroup, so keeping `mirrorH` and `mirrorV` necessarily keeps `rot180`, and the report closes the mask and says so. An empty result is explained rather than left bare — *impossible* / *dead spelling* / *unpopulated* (§2). The header prints the stabilizers actually present, because canonical spelling is not guessable from the group alone. Regeneration is square-frame only (`Fiber`), and the report says so on a rectangular domain rather than showing a misleading zero. (`SymmetrySlice`)
 - **[9] atoms** — *factor a typed shape into atoms* (§9): cut its cell-graph into strands at the junctions under a chosen cut-law (`straight` = bars, `bent` = Ls), fold congruent strands into a dictionary of distinct canonical shapes, and report each atom's isotropy and the shape's stabilizer. Unlike [2]/[3] it doesn't slice the context table — it inverts a *single* shape into its parts (the decomposition direction, the sibling of [7]'s fiber enumeration). The T yields `bar + dot` under `straight`, `L + dot` under `bent`. (`Decompose`)
-- **[s] scale** — *coarse-grain a typed grid by `k×k` block-decimation* (§11, the change-of-scale knob): fold each block to its canonical pose, keep one coarse bit, and read off what the fold discarded — `|orbit|` microstates per block, `Σ log|orbit|` integrated out. It is the **same §9 fold as [9] atoms**, sat one cell over in the same generate/node row: atoms cut *one shape* into finer parts, scale folds *one grid* into a coarser grid — both invert a single object rather than slicing the context table. So it rides the menu's two existing axes as a node fold, while *conceptually* being the third knob of §11 (conservation / relativity / scale). The two-scale renormalization *loop* that runs the flow over it is built separately as `RenormalizationLoopRunner` (§11). (`Scale`)
+- **[s] scale** — *coarse-grain a typed grid by `k×k` block-decimation* (§11, the change-of-scale knob): fold each block to its canonical pose, keep one coarse bit, and read off what the fold discarded — `|orbit|` microstates per block, `Σ log|orbit|` integrated out. It is the **same §9 fold as [9] atoms**, sat one cell over in the same generate/node row: atoms cut *one shape* into finer parts, scale folds *one grid* into a coarser grid — both invert a single object rather than slicing the context table. So it rides the menu's two existing axes as a node fold, while *conceptually* being the third knob of §11 (conservation / relativity / scale). The two-scale renormalization *loop* that runs the flow over it lives in the suite as `RenormalizationTest` (§11). (`Scale`)
 - **[p] prime** — *is the `n`-cell frame itself prime?* — `[s] scale`'s arithmetic sibling. It measures the **translational** action the router quotients away (cropping to the box, §6): the cyclic group `Z_n`, whose subgroup lattice *is* the divisor lattice of `n`. So **prime ⟺ `Z_n` has no proper subgroup ⟺ the frame has no sub-period ⟺ no `k | n` with `1 < k < n` ⟺ `Scale` cannot coarse-grain it** — a prime is a **scale-rigid** observation window. The exact verdict is the orbit law: act with `Z_n` on every length-`n` binary row, and *every non-constant orbit has size `n`* iff `n` is prime (orbit size = minimal period, which divides `n`); the report also prints the **Fermat corollary** `2^n ≡ 2 (mod n)` — flagged a *proxy* (necessary, not sufficient: pseudoprimes pass it, the orbit test is exact, the §3 bounding-box-vs-`Signature` distinction again). Unlike the other entries this is a **frame-level** diagnostic — a property of `n`, not of any context — so it sits beside `scale` rather than on the classify/generate × node/table grid. The *distribution* of primes is **not** reported: that spacing law is the analytic residual the symmetry points at but does not derive (§5, and the §11 caveat). (`PrimeFrame`, `PrimeReport`)
 
 *The whole table* — enumerate over every context:
 
+- **[t] trie** — the **store's own shape**, which the context view cannot show: contexts are the *leaves*, while the store also holds every prefix. Nodes per rung, how many are already label-pure, and how many are **redundant** (their parent was pure, so that rung's coordinate decided nothing for them and a radix merge would collapse them upward). This is the compression the prefixes expose. (`TrieReport`)
 - **[6] topology** — the full table via the `Topology` automaton (the empty partial key — pin nothing): contexts grouped by symmetry then coordinates, with imbalance, exception count, broken symmetries. (`TopologyReport`)
 - **[7] possibility** — for every node, enumerate the descriptor-fiber (all grids that route there, incl. unseen) and split by predicted label; `seen` vs `fiber` exposes what training never covered. (`PossibilityReport`)
 - **[v] volume** — for every node, **measure** the descriptor-fiber rather than list it: its volume five ways — `|fiber|` (full-frame count), `|orbit|` (the bbox-frame rigid orbit), `[G:Stab]` (the orbit-stabilizer index — the group determinant), `√det(J Jᵀ)` (the Jacobian/coarea determinant of the invariant-component gradients), and `det L` (the Matrix-Tree spanning-tree determinant). The `id` column checks the exact identity `|orbit| = [G:Stab]` (§11, *thread = determinant*); `|fiber|/|orbit|` is the translational multiplicity. (`VolumeReport`, `ThreadVolume`)
 - **[8] diagnose** — the collision diagnostic (§3): for every entropy>0 context, classify the collision as an irreducible symmetry-twin or a separable one, and for the separable ones emit the information-gain-maximising topological primitive as the blueprint for the next invariant. Also runs automatically as a training post-pass. (`CollisionDiagnostic`)
+- **[c] critic** — the diagnostic aimed at the **chain** rather than the data (§3). Grades every coordinate *legal / useful / new / earned / not cheating* — `ILLEGAL`, `INERT`, `REDUNDANT`, `UNEARNED`, `DEGENERATE`, with `ORIENTING` as the non-fault verdict for the documented radial-only `Position` exception — using an ablation pass that drops each coordinate and re-derives both the partition and the collision count. Then, per collision, answers *extend or stop*: `IRREDUCIBLE` (same orbit — the chain is not the problem, stop looking), battery-has-it, or battery-empty, in which case it renders both sides as shapes for the reader. Every grade but `ILLEGAL` is relative to the loaded dataset. (`ChainCritic`)
 
 The generate/node entries [2]/[3] and the headline [1] are all **partial keys into the same context table** — by symmetry, by an invariant column, by label — so `topology` (generate/table) is just the empty partial key. The `{stabilizer, break}` distinction dissolves into "which columns you pin"; the resolve/generate row is *which way you read them*.
 
@@ -418,7 +580,7 @@ This is the same symmetry-core-vs-structural-refiner split the whole machine run
 2. **Each axis must be earned by a collision and invariant under the prior axes**, or it undoes them. Position is the exception that proves the rule (radial-only).
 3. **Keep the one degeneracy you want — rotation of a genuine shape — and break the rest.** Telling them apart is the whole game.
 4. **Symmetry-twins are irreducible by symmetry, by proof.** When two shapes share every symmetry quantity, the only remaining signal is outside the symmetry algebra; exact identity memory, quotiented by the surviving symmetry, is the honest floor.
-5. **Classify and generate are the two directions of one map.** The descriptor is a fibration; a trie node is a router forward and a generator of its fiber backward.
+5. **Classify and generate are the two directions of one map.** The descriptor is a fibration; a context is a router forward and a generator of its fiber backward.
 6. **Do the reference-frame work once, and let the frame read out the symmetry.** Crop to the bounding box (factor out translation, the transform that was never in the group), and the box shape *is* the stabilizer ceiling — a rectangle has already disabled the off-diagonal symmetries as self-symmetries, keeping them only as orbit generators across the transpose. Normalize once at the front; routing and generation both run in the small frame.
 7. **The descriptor is a nested coordinate system — stabilizer ⊃ break ⊃ label — and each operation fixes one coordinate and enumerates the next.** Fix a stabilizer, enumerate its breaks (by stabilizer). Fix a break, enumerate its grids (possibility / fiber). Fix the grid, and only the label remains (by grid). Every query is a partial key into the context table; topology is the empty key. Naming discipline: *generate* is the duality direction (principle 5); the operation is to *enumerate / invert a fiber* — say which one, the shape-fiber or the descriptor-fiber. The interpreter's menu (§8) is laid out on exactly these two axes — the classify/generate direction (principle 5) × the node/table scope (this principle) — so the UI mirrors the descriptor's own structure.
 
@@ -469,7 +631,7 @@ A *law of physics* is not a new category — it is the requirement that the stat
 
 ### The law is a compression
 
-A lawful trajectory needs only **(initial frame + rule)**; the rest regenerate by iterating — that's compression. The descriptor does **spatial** compression (crop the position → fold the orbit to one code), the law does **temporal** compression (one rule instead of every frame). Like a video codec: conserved quantities are the **compressible** skeleton (stored once), entropy is the **incompressible** residual, and a **force is a keyframe** — the surprise the predictor couldn't fold. A *lawful* universe is a *compressible* one; finding the laws is finding the best compression (Kolmogorov / minimum description length).
+A lawful trajectory needs only **(initial frame + rule)**; the rest regenerate by iterating — that's compression. The descriptor does **spatial** compression (crop the position → fold the orbit to one code), the law does **temporal** compression (one rule instead of every frame). Like a video codec: conserved quantities are the **compressible** skeleton (stored once), entropy is the **incompressible** residual, and a **force is a keyframe** — the surprise the predictor couldn't fold. A *lawful* universe is a *compressible* one; finding the laws is finding the best compression (Kolmogorov / minimum description length). The trie makes this operational (§5, "path length = description length"): the lazy walk's resolution depth *is* the description length of a label's dependence — laws stop shallow, facts walk to the grid.
 
 ### Entropy = log of the fiber
 
@@ -503,7 +665,7 @@ The seam is already present: a `ResidualResolver` (§5) makes an implicit choice
 
 On top of a utility sits **optimal stopping** — the secretary / **Sultan's dowry** problem (`OptimalStop`): outcomes arrive one at a time, scored by the utility, and you must commit or discard on the spot with no recall. You cannot integrate the whole volume; you carry only a **running benchmark register and your position**. The classic solution is the **`1/e` rule** — observe (reject) the first `⌊n/e⌋`, then take the first to beat them — which lands on the global best with probability `→ 1/e ≈ 0.368`, a deliberately **volume-blind** rule.
 
-The rule is factored into a **harness (`OptimalStop`) and a `Strategy`** — the explore-vs-commit personality dial. The shipped trio anchors the **safe↔risky axis with the dowry as the calibrated `NEUTRAL`**: `SAFE` (greedy, take the first — risk-averse pole, `P(best)=1/n`), `NEUTRAL` (`1/e`, maximises `P(best)`), `RISKY` (holdout, wait for the best — risk-seeking pole, `P(best)=1/n`). Neutral is not a compromise but the **fixed point of the two regrets** (settling-for-less vs ending-empty), which is why it is the unique optimum the poles fall away from (the `SultanRunner` Monte Carlo shows exactly this: ≈0.38 at neutral, ≈0.05 at both poles). `Strategy.risk(factor)` scales riskiness relative to neutral, each doubling **halving the remaining distance to the pole it leans toward** — `risk(2)` ("twice as risky") sits at `(1+1/e)/2 ≈ 0.684`, halfway from the dowry to pure holdout.
+The rule is factored into a **harness (`OptimalStop`) and a `Strategy`** — the explore-vs-commit personality dial. The shipped trio anchors the **safe↔risky axis with the dowry as the calibrated `NEUTRAL`**: `SAFE` (greedy, take the first — risk-averse pole, `P(best)=1/n`), `NEUTRAL` (`1/e`, maximises `P(best)`), `RISKY` (holdout, wait for the best — risk-seeking pole, `P(best)=1/n`). Neutral is not a compromise but the **fixed point of the two regrets** (settling-for-less vs ending-empty), which is why it is the unique optimum the poles fall away from (`OptimalStopTest` asserts exactly this: ≈0.38 at neutral, ≈0.05 at both poles). `Strategy.risk(factor)` scales riskiness relative to neutral, each doubling **halving the remaining distance to the pole it leans toward** — `risk(2)` ("twice as risky") sits at `(1+1/e)/2 ≈ 0.684`, halfway from the dowry to pure holdout.
 
 Two honest seams. **(1)** This is **decision theory** — one agent against indifferent chance — built on the same expected-utility foundation as **game theory**, which is its multi-agent sibling (add a second chooser competing for the same stream and the threshold stops being a personality and becomes a strategy that must best-respond to the opponent's — a *stopping game*, unbuilt). **(2)** The `1/e` rule is blind because the abstract problem *cannot* see the remaining volume — but a Plexus **can** (`Fiber`, `ThreadVolume`), so it is uniquely equipped to run the **volume-aware** (full-information) rule instead: a declining threshold read off how much fiber remains, which `Strategy.commit(index, total, value, benchmark)` is general enough to host as a future sibling of the threshold family. The residual where even this runs out — two outcomes tied on every admissible measurement — is the **symmetry-twin** (§10.4): the choice no rule can make, left to the exact-exception store (the choice function supplied by fiat, the finite stand-in for an Axiom-of-Choice selection).
 
@@ -524,6 +686,8 @@ The open-set discipline that governs all four is §8's gather rule read as pract
 ### Symmetry breaking: the rectangle, and sexual dimorphism
 
 The descriptor's grid is **square** because the square's symmetry (D4) makes the two axes *interchangeable* — the transpose is a symmetry, so "extent along x" and "extent along y" are the same kind of coordinate (Principle 6). Break that — make the grid a **rectangle** — and the transpose dies (D4 → D2): the two axes become **incommensurable**, two specialized dimensions that can no longer be folded into each other. A *vertical* box is then depth-first search (deep along one axis, narrow on the other); a *horizontal* box is breadth-first (its transpose partner); and choosing between them is choosing *which* dimension gets the deep search. The aspect ratio is how lopsided that commitment is — square = agnostic, a thin rectangle = "one axis is nearly everything." (This is no longer only a reading: `Dihedral.d2()` implements exactly the D2 break, and the routing core handles rectangular domains — §2.)
+
+The break is now **measurable in the query vocabulary**. Under D4, `rot90`-conjugation swaps `mirrorH`↔`mirrorV`, so the two are one class and the canonical mask always spells it `mirrorH` — asking a square table for `mirrorV` returns nothing, a *dead spelling* (§2). Under D2 the only rotation is `rot180`, which **commutes** with both mirrors, so nothing folds and both stay separately askable: the rectangle's table lists `[identity, mirrorH]` and `[identity, mirrorV]` as distinct stabilizers. Breaking the transpose does not merely make the two axes different — it makes them **separately nameable**, and the count of things you can ask for goes up. The lost symmetry is paid back as vocabulary.
 
 Read biologically, this symmetry-breaking **is sexual dimorphism.** Isogamy — gametes all one size — is the *square*: the two reproductive roles are interchangeable (and high-symmetry; many isogamous mating types form a regular n-gon, every role equivalent). Anisogamy — two gamete sizes evolving under disruptive selection — is the *rectangle*: the transpose breaks, and the population splits into a **depth specialist** (the egg: few, large, provisioned — *exploit*) and a **breadth specialist** (the sperm: many, small, motile — *explore*). The two sexes are the broken transpose; the egg/sperm split *is* the depth/breadth (DFS/BFS) split of the strategy section above, frozen into biology — which is why the dominant strategy under incommensurable axes is two specialists rather than one compromise. (Honest limit: this is rigorous at the **gamete** level — anisogamy genuinely is a depth/breadth bifurcation — and a just-so story above it. "Male minds vs female minds" collapses an orbit a single axis cannot carry — the §10.4 trap, a scalar forced onto a whole behavioural fibre.)
 
@@ -557,7 +721,7 @@ Alongside *conservation* (fix a coordinate) and *relativity* (choose the foliati
 
 The decimation needs `k | side`, which is where the frame's own arithmetic enters: a **prime side has no such `k`** (only the trivial `1` and `side`), so a prime frame is **scale-rigid** — the renormalization knob is blocked, there is no non-trivial coarse-graining at all. `PrimeFrame` (`org.tervel.plexus.ops`, the `[p] prime` menu reading) makes this executable: it reads the **translational** action the router quotients away (the cyclic `Z_n`, whose subgroup lattice is the divisor lattice of `n`) and verifies, by the orbit law, that *every non-constant orbit has size `n` iff `n` is prime* — the rigidity that also forces `2^n ≡ 2 (mod n)` (Fermat, as a consequence of the indecomposable frame; the report flags the congruence a necessary-only proxy and the orbit test the exact form). It characterizes one frame's primality structurally; the **distribution** of primes — how the scale-rigid sides thin out — stays the analytic residual the symmetry points at but does not derive (§5).
 
-The decimation must **commute with the group** (`k | side`, a centre-symmetric tiling, a D4-invariant per-block readout) — the analogue of a regulator that preserves the symmetry. This is where the **quantum/classical conflict** is meant to surface, via renormalizability: feed the coarse grid back to the **collision diagnostic** (§3) across two scales and watch whether the invariant chain **closes** (a finite fixed point — renormalizable: the classical fold and the quantum fiber reconcile) or whether each coarse step emits a **new blueprint** (unbounded counterterms — non-renormalizable: the classical fold has no finite quantum completion, and the diagnostic names the very primitive the fold failed to keep). The **two-scale closure loop** that runs this flow is built (`RenormalizationLoopRunner`): it synthesises a fine dataset, takes the fine-scale `CollisionDiagnostic` reading, folds the dataset with `Scale`, retrains a fresh `Plexus` at `side/k`, and reads the coarse diagnostic — then issues a three-way verdict framed in Plexus's own **exception** terms (the diagnostic exposes a structured `analyze` result for this). The quantities it compares are the **blueprint** (the set of `Primitive` names the diagnostic emits for *separable* collisions — the **reducible** counterterms a richer chain could absorb) and the **floor** (the count of *provable-twin* collisions — the **irreducible** exceptions that land permanently in the exact store):
+The decimation must **commute with the group** (`k | side`, a centre-symmetric tiling, a D4-invariant per-block readout) — the analogue of a regulator that preserves the symmetry. This is where the **quantum/classical conflict** is meant to surface, via renormalizability: feed the coarse grid back to the **collision diagnostic** (§3) across two scales and watch whether the invariant chain **closes** (a finite fixed point — renormalizable: the classical fold and the quantum fiber reconcile) or whether each coarse step emits a **new blueprint** (unbounded counterterms — non-renormalizable: the classical fold has no finite quantum completion, and the diagnostic names the very primitive the fold failed to keep). The **two-scale closure loop** that runs this flow is built, and asserted rather than merely printed (`RenormalizationTest`): it takes the fine-scale `CollisionDiagnostic` reading, folds the dataset with `Scale`, retrains a fresh `Plexus` at `side/k`, and reads the coarse diagnostic — then issues a three-way verdict framed in Plexus's own **exception** terms (the diagnostic exposes a structured `analyze` result for this). The quantities it compares are the **blueprint** (the set of `Primitive` names the diagnostic emits for *separable* collisions — the **reducible** counterterms a richer chain could absorb) and the **floor** (the count of *provable-twin* collisions — the **irreducible** exceptions that land permanently in the exact store):
 
 - **renormalizable closure** — the fold preserved the floor and demanded no new counterterm (a finite fixed-point chain across scales);
 - **soft non-renormalizability** — the floor held but the coarse scale demands a *new* reducible counterterm (renormalizable only with an enlarged chain);
@@ -572,6 +736,10 @@ Still unbuilt: the **phase-sum** that would complete the quantum side. The loop 
 §3's collision diagnostic discovers *which* invariant a separable collision demands and emits its formal specification — then stops, **by design**, leaving the implementation as "manual design work" so the chain stays minimal and meaningful. **Complexus** is the planned downstream project that closes that loop: it turns the diagnostic's advisory blueprint into a *self-extending invariant chain* — wrap the discovered `Primitive` as an `Invariant`, inject it into the chain, refit, and repeat until only the irreducible twins remain (the floor).
 
 Crucially it lives **outside** Plexus, as a separate project that depends on Plexus and never the reverse. That one-directional dependency is the signal to split it off: the discovery engine consumes the router's public seams (`Invariant` injection, `Primitive.battery()`, `CollisionDiagnostic.analyze()`) and produces new invariants, while Plexus stays the minimal, exact, human-curated core. The search/synthesis discipline — and, at its far end, genuine invariant *synthesis* (composition over the primitive algebra as interpreted function trees, **not** a bytecode compiler) — is a different kind of thing that would dilute the core's "minimal by construction" identity if folded in. The same rule that governs the invariant chain (§3 — add an axis only when a collision demands it) governs the project boundary: Plexus needs **no changes now**; the seams already suffice, and the one deferred refinement (`analyze()` handing back the chosen `Primitive` object rather than its name) waits for the real consumer to demand it.
+
+Since written, the loop has been **closed for the battery** (`Trie.growing`, §5): a collision detected at insert runs the primitives on that leaf's members and grows one edge locally if any column separates, memorising only what nothing can. Measured, that takes the 9×9 path/fork set from five sealed exceptions to zero. `ChainCritic` (§3) supplies the admission test a candidate must pass — legal, useful, new, earned, not cheating.
+
+What that does **not** do is what Complexus is actually for. The growing configuration selects from a **fixed battery** of four hand-written primitives; it discovers *which* known coordinate a collision needs, never a new one. Complexus is the synthesis step — composition over the primitive algebra as interpreted function trees, searching a space no fixed list enumerates — and that is still a different kind of thing, still outside, still one-directional in its dependency. The seams have proven sufficient rather than provisional: the extension loop was built against `Primitive.battery()`, `Invariant`, and the orbit test without altering any of them.
 
 The name is the joke: **Complexus** is the complexity-engine of a simplicity-machine — the anti-Plexus one mutated letter away, the surplus the minimality principle exists to forbid. Its tagline is **"Occam's Other Razor — the one that multiplies entities."**
 

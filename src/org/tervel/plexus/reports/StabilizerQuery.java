@@ -339,9 +339,13 @@ public class StabilizerQuery implements Report {
                     ctx.isException(posed) ? "  [this grid is an exception -> score " + ans + "]" : ""));
         }
 
-        sb.append("  which moves keep the input on its orbit?\n");
-        sb.append("    allowed paths   (keep ").append(ans).append("): ").append(names(new Searcher(posed, ans).apply(plexus))).append('\n');
-        sb.append("    forbidden paths (flip):    ").append(names(new Searcher(posed, 1 - ans).apply(plexus))).append('\n');
+        // Three disjoint verdicts, so the moves partition exactly: allowed, forbidden, and off-map (a move
+        // whose image was never trained — previously miscounted as allowed, since score() rejects with 0).
+        final var self = plexus.verdict(posed);
+        sb.append("  which moves keep the input on its orbit?  (allowed = same verdict, forbidden = flipped)\n");
+        for (final var v : Plexus.Verdict.values())
+            sb.append(String.format("    -> %-9s %s%s%n", v, names(new Searcher(posed, v).apply(plexus)),
+                    v == self ? "   <- allowed (the posed shape's own verdict)" : ""));
 
         // The sibling breaks: other shapes valid under the same stabilizer (fix stabilizer, vary break).
         final var siblings = new ArrayList<String>();

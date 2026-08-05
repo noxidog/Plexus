@@ -4,10 +4,10 @@ import org.tervel.plexus.invariants.Invariant;
 import org.tervel.plexus.residual.ExactExceptions;
 import org.tervel.plexus.residual.ResidualResolver;
 import org.tervel.plexus.symmetry.SymmetryGroup;
+import org.tervel.plexus.trie.Trie;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
@@ -52,11 +52,83 @@ public class Plexus implements BiConsumer<int[], Integer> {
         @Override public boolean radial() { return false; }
     }
 
-    /** One routing context (bucket): its [neg, pos] counts and its exact exceptions. It owns its answer. */
+    /**
+     * A <b>sector</b> — a symmetry class, and the unit at which the invariant chain may differ. Orbit-mates
+     * have conjugate stabilizers and therefore the same canonical mask, so a sector is a union of whole
+     * orbits: selecting a chain by sector can never route orbit-mates apart.
+     *
+     * <p>Radial is deliberately a <em>single</em> sector ({@code stabilizer == 0}). Subdividing it would
+     * require putting the stabilizer into {@link RadialKey}, which drops it on purpose (a round shape has no
+     * orientation, §4); without that column two radial sectors running different chains could produce equal
+     * coordinate lists and silently merge. The oriented track carries its stabilizer in the key, so it
+     * subdivides safely.
+     */
+    public record Sector(boolean radial, int stabilizer) {
+        /** The sector a key belongs to — every key determines one, which is what makes the chain recoverable. */
+        public static Sector of(Key k) { return new Sector(k.radial(), k.symmetry()); }
+    }
+
+    /**
+     * Which coordinates a sector routes on. The chain is no longer forced to be uniform: by orbit–stabilizer
+     * {@code |orbit| = |G| / |Stab|}, so a coordinate — which must be constant on an orbit to be legal
+     * (§3) — has to agree on <em>fewer</em> grids the more symmetry the sector has. The legal vocabulary
+     * therefore <b>grows monotonically up the subgroup lattice</b>, reaching everything at full symmetry,
+     * where the orbit is a single grid and any function of it is trivially orbit-constant.
+     *
+     * <p>The shipped {@link #uniform()} is exactly the historical behaviour — one declared chain, gated only
+     * by the radial verdict — so this generalises the radial/oriented split (a two-level special case) into
+     * a ladder with one rung per conjugacy class of stabilizer, without changing any existing result.
+     */
+    @FunctionalInterface
+    public interface ChainPolicy {
+
+        /** The coordinates {@code sector} routes on, drawn from the {@code declared} chain. */
+        List<Invariant> chainFor(Sector sector, List<Invariant> declared);
+
+        /** The historical policy: one chain for everything, gated only by {@link Invariant#applies}. */
+        static ChainPolicy uniform() {
+            return (sector, declared) -> declared.stream().filter(d -> d.applies(sector.radial())).toList();
+        }
+
+        /**
+         * <b>Withhold</b> coordinates from low-symmetry sectors: the {@code withheld} coordinates route only
+         * in oriented sectors whose orbit is at most {@code maxOrbit}; everywhere else the chain is the
+         * declared vocabulary minus them. This is the theorem above made operational — a coordinate too
+         * pose-dependent to be legal in the trivial sector (orbit 8 under D4) can be perfectly legal where
+         * the orbit is 1 or 2, because there are that many fewer grids for it to agree across.
+         *
+         * <p>Withholding rather than appending matters twice over: a coordinate the caller already declared
+         * would otherwise appear <em>twice</em> in the rich sectors, and rebuilding the chain by filtering
+         * the declared list preserves its <b>order</b> — which is load-bearing, since chain order is the
+         * trie's rung order (§5). Pass the same {@link Invariant} instances that appear in the declared
+         * chain; membership is by equality.
+         *
+         * <p>Radial is exempt, being a single sector ({@link Sector}).
+         */
+        static ChainPolicy byOrbit(SymmetryGroup group, int maxOrbit, List<Invariant> withheld) {
+            final var order = group.transforms().size();
+            return (sector, declared) -> {
+                final var applicable = declared.stream().filter(d -> d.applies(sector.radial()));
+                final var fixers = Integer.bitCount(sector.stabilizer());
+                final var rich = !sector.radial() && fixers > 0 && order / fixers <= maxOrbit;
+                return rich ? applicable.toList() : applicable.filter(d -> !withheld.contains(d)).toList();
+            };
+        }
+    }
+
+    /**
+     * One routing context (bucket): its {@code [neg, pos]} counts and its exact exceptions. It owns its
+     * answer.
+     *
+     * <p>This is a <b>derived view</b> over a leaf of the store, materialised on demand — not the storage
+     * itself, and not mutable. In particular {@code exceptions} is computed rather than sealed: a member is
+     * an exception exactly when its own recorded majority contradicts its leaf's, both read from live
+     * counts. That removes the two-pass training the frozen list used to require, and it fixes a defect the
+     * frozen list had — a grid seen under <em>both</em> labels used to be sealed as an exception once per
+     * contradicting example, which flipped it away from its own majority (a grid 3:2 in favour of 1 answered
+     * 0). Comparing majorities answers such a grid with the label it mostly carries.
+     */
     public record Context(long[] counts, List<int[]> exceptions) {
-        static Context empty() { return new Context(new long[2], new ArrayList<>()); }
-        void bump(int label)       { counts[label]++; }
-        void addException(int[] g) { exceptions.add(g.clone()); }
 
         /** The context's answer: its majority label. */
         public int answer() { return counts[1] > counts[0] ? 1 : 0; }
@@ -89,14 +161,22 @@ public class Plexus implements BiConsumer<int[], Integer> {
      */
     private final ResidualResolver resolver;
 
+    /** Which of the declared coordinates each symmetry class routes on ({@link ChainPolicy}). */
+    private final ChainPolicy policy;
+
     /**
-     * The two decoupled context tables — one per track. Splitting the single map into a {@link RadialKey}-
-     * keyed and an {@link OrientedKey}-keyed table is the storage half of the branching: each table holds
-     * only keys of its own track, so a lookup never mixes the two coordinate layouts. {@link #contextFor}
-     * dispatches a key to its table by sealed-type {@code switch}.
+     * The store. Keys are held as <b>paths</b> — the track, then the stabilizer edge, then one edge per
+     * chain coordinate — rather than as whole tuples in a hash map, so every prefix of a key is a live node
+     * and not a thing recomputed by regrouping. {@link Context} is a <em>view</em> over a leaf, derived from
+     * live counts on demand; it is not stored, which is why there is no seal pass here (an exception is a
+     * member whose own majority contradicts its leaf's, and both sides move together).
+     *
+     * <p>The trie is constructed with an <b>empty extension vocabulary</b>, so its paths are exactly the
+     * descriptor's keys and {@link #contexts} is a faithful enumeration. Handing it a vocabulary turns on
+     * local self-extension (§5), which deliberately makes paths longer than the declared key — a different
+     * contract, and not the one the router's public {@code Key} surface promises.
      */
-    private final Map<RadialKey, Context> radialContexts = new HashMap<>();
-    private final Map<OrientedKey, Context> orientedContexts = new HashMap<>();
+    private final Trie store = new Trie(this);
 
     /**
      * Construct a router from its three injected parts: the symmetry {@code group}, the {@code invariants}
@@ -114,11 +194,22 @@ public class Plexus implements BiConsumer<int[], Integer> {
      * dimensions and a D2 group ({@link org.tervel.plexus.symmetry.Dihedral#d2()}).
      */
     public Plexus(SymmetryGroup group, List<Invariant> invariants, ResidualResolver resolver, int rows, int cols) {
+        this(group, invariants, resolver, rows, cols, ChainPolicy.uniform());
+    }
+
+    /**
+     * Construct a router whose chain may differ <b>per sector</b>. The {@code invariants} list becomes the
+     * <em>declared</em> vocabulary and {@code policy} decides which of it each symmetry class actually routes
+     * on; {@link ChainPolicy#uniform()} reproduces the single-chain behaviour of the other constructors.
+     */
+    public Plexus(SymmetryGroup group, List<Invariant> invariants, ResidualResolver resolver,
+                  int rows, int cols, ChainPolicy policy) {
         this.group = group;
         this.invariants = List.copyOf(invariants);
         this.resolver = resolver;
         this.rows = rows;
         this.cols = cols;
+        this.policy = policy;
     }
 
     /** Row count of {@code g}'s frame — the pinned domain height, or the inferred square side. */
@@ -134,21 +225,33 @@ public class Plexus implements BiConsumer<int[], Integer> {
      * plus the coordinates of every invariant that {@link Invariant#applies} to that verdict.
      */
     public Key descriptor(int[] g) {
+        final var sector = sector(g);
+        final var coords = chainFor(sector).stream().map(d -> d.applyAsInt(g)).toList();
+        return sector.radial() ? new RadialKey(coords) : new OrientedKey(sector.stabilizer(), coords);
+    }
+
+    /** The symmetry class {@code g} routes in — the radial verdict, plus the canonical stabilizer if oriented. */
+    public Sector sector(int[] g) {
         final var radial = isRadial(g);
-        final var coords = invariants.stream().filter(d -> d.applies(radial)).map(d -> d.applyAsInt(g)).toList();
-        return radial ? new RadialKey(coords) : new OrientedKey(group.canonicalStabilizer(g, rows(g), cols(g)), coords);
+        return new Sector(radial, radial ? 0 : group.canonicalStabilizer(g, rows(g), cols(g)));
     }
 
-    /** Dispatch a key to its track's context table; {@code create} computes an empty context if absent. */
-    private Context contextFor(Key key, boolean create) {
-        return switch (key) {
-            case RadialKey r -> create ? radialContexts.computeIfAbsent(r, k -> Context.empty()) : radialContexts.get(r);
-            case OrientedKey o -> create ? orientedContexts.computeIfAbsent(o, k -> Context.empty()) : orientedContexts.get(o);
-        };
+    /** The coordinates a sector routes on — the declared chain as filtered by the injected {@link ChainPolicy}. */
+    public List<Invariant> chainFor(Sector sector) { return policy.chainFor(sector, invariants); }
+
+    /** The coordinates behind a key. Every key determines its sector, so its chain is always recoverable. */
+    public List<Invariant> chainFor(Key key) { return chainFor(Sector.of(key)); }
+
+    /** The context a grid resolves to, as a view over its leaf; null if the full path was never trained. */
+    private Context contextFor(int[] grid) {
+        final var leaf = store.leafFor(grid);
+        return leaf == null ? null : new Context(leaf.counts(), leaf.dissenters());
     }
 
-    /** Verdict: a round shape (some rotation fixes its centred form) has no orientation. */
-    private boolean isRadial(int[] g) {
+    /** Verdict: a round shape (some rotation fixes its centred form) has no orientation. Public because it
+     *  is the cheapest prefix of {@link #descriptor} — a per-edge (lazy) router needs the track verdict
+     *  without paying for the stabilizer and the chain. */
+    public boolean isRadial(int[] g) {
         final var b = Invariant.box(g, rows(g), cols(g));
         if (b[0] != b[1]) return false;                 // non-square box ⇒ rot90 transposes it ⇒ can't be radial
         final var c = centered(g, rows(g), cols(g));
@@ -182,7 +285,7 @@ public class Plexus implements BiConsumer<int[], Integer> {
 
     /** The applicable discriminator coordinates of a key, by name (e.g. {@code {sig:167}}, or {@code {sig:167, deg:2}}). */
     public java.util.LinkedHashMap<String, Integer> namedCoords(Key k) {
-        final var names = invariants.stream().filter(d -> d.applies(k.radial())).map(Invariant::name).toList();
+        final var names = chainFor(k).stream().map(Invariant::name).toList();
         final var out = new java.util.LinkedHashMap<String, Integer>();
         for (var i = 0; i < k.coords().size() && i < names.size(); i++) out.put(names.get(i), k.coords().get(i));
         return out;
@@ -190,63 +293,108 @@ public class Plexus implements BiConsumer<int[], Integer> {
 
     // ---- Training / scoring ----------------------------------------------------------------
 
+    /** One online insert: walk the path, bump every rung. Legal at any time — there is nothing to reseal. */
     @Override
     public void accept(int[] input, Integer label) {
-        contextFor(descriptor(input), true).bump(label == 1 ? 1 : 0);
-    }
-
-    public int score(int[] inputs) {
-        final var c = contextFor(descriptor(inputs), false);
-        if (c == null) return 0;                                   // unseen key → reject
-        return resolver.resolve(c, inputs);                        // structure routed; residual decides the leaf
+        store.add(input, label == 1 ? 1 : 0);
     }
 
     /**
-     * Trains on a labelled dataset in two internal passes: first count every example into its context,
-     * then seal each context's exact exceptions — grids whose label contradicts their context's now-
-     * converged majority. The seal pass must follow the count pass (a context's majority is only known
-     * once all counts are in), and it must re-read the same data, which is why training takes the whole
-     * dataset rather than streaming: the contradictions can only be identified against the final counts.
+     * The three <b>distinct</b> outcomes of a resolution. {@link #score} collapses the last two onto
+     * {@code 0}, which is lossy in a way that matters: "the structure routed you to a context whose answer
+     * is negative" and "no example ever routed here" are different epistemic states — one is a judgement,
+     * the other is the honest admission that routing has nothing to say. A caller that cannot tell them
+     * apart will read silence as denial (the {@link org.tervel.plexus.ops.Searcher} did exactly that,
+     * counting never-explored transforms among a grid's "surviving" symmetries).
      */
-    void fit(List<int[]> grids, List<Integer> labels) {
+    public enum Verdict {
+        /** Routed to a context, and the residual resolver answered positive. */
+        POSITIVE,
+        /** Routed to a context, and the residual resolver answered negative. */
+        NEGATIVE,
+        /** No context — this key was never trained. Not a negative: an absence of evidence. */
+        UNSEEN
+    }
+
+    /**
+     * Resolve a grid to its {@link Verdict} — the full-information form of {@link #score}. Same single
+     * lookup; it simply declines to spend the reject signal.
+     */
+    public Verdict verdict(int[] grid) {
+        final var c = contextFor(grid);
+        if (c == null) return Verdict.UNSEEN;                      // unseen key → nothing to say
+        return resolver.resolve(c, grid) == 1 ? Verdict.POSITIVE : Verdict.NEGATIVE;
+    }
+
+    /**
+     * The binary answer: 1 for a positive resolution, 0 for both a negative one and an unseen key. Retained
+     * as the scoring surface (a confusion matrix wants a bit), but prefer {@link #verdict} anywhere the
+     * difference between "judged negative" and "never seen" can change what the caller concludes.
+     */
+    public int score(int[] inputs) {
+        return verdict(inputs) == Verdict.POSITIVE ? 1 : 0;
+    }
+
+    /**
+     * Trains on a labelled dataset — the batch form of {@link #accept}, and public for the same reason
+     * {@code accept} is: training is part of the router's surface, not an accident of package layout.
+     *
+     * <p>It runs in <b>one</b> pass. The historical second pass existed only to seal each
+     * context's exceptions against a converged majority — a contradiction could not be identified early,
+     * because the majority it contradicts was not yet known. That constraint belonged to the storage, not to
+     * the problem: a leaf that keeps its members derives the same contradictions from live counts at read
+     * time, so a later insert that flips a majority flips them with it. Nothing is frozen, so nothing can go
+     * stale, and {@link #accept} is legal at any point afterwards.
+     */
+    public void fit(List<int[]> grids, List<Integer> labels) {
         for (var i = 0; i < grids.size(); i++) accept(grids.get(i), labels.get(i));
-        for (var i = 0; i < grids.size(); i++) {
-            final var g = grids.get(i);
-            final var c = contextFor(descriptor(g), false);
-            if (c != null && labels.get(i) != c.answer()) c.addException(g);
-        }
         resolver.seal(this, grids, labels);   // structure has converged; let the residual policy train itself
     }
 
     // ---- Routing accessors (the context decides; these just expose the routing) -------------
 
     /**
-     * The contexts of both tracks merged into one read-only view for inspection and reporting — radial
-     * keys first, then oriented. The two tables stay decoupled in storage; this is only the union the
-     * whole-table operations (the {@link org.tervel.plexus.ops.Topology} walk) iterate over.
+     * Every context, as a read-only view for inspection and reporting — the trie's leaves, each rebuilt into
+     * the {@link Key} whose path reaches it and the {@link Context} its counts imply. Oriented first, then
+     * radial. This is a <b>projection</b>, materialised per call, not the storage itself: the store keeps
+     * paths, and a whole key is only reassembled when a report asks to iterate them.
      */
     public Map<Key, Context> contexts() {
-        final var merged = new java.util.LinkedHashMap<Key, Context>(radialContexts.size() + orientedContexts.size());
-        merged.putAll(radialContexts);
-        merged.putAll(orientedContexts);
+        final var merged = new java.util.LinkedHashMap<Key, Context>();
+        store.forEachLeaf((radial, stabilizer, coords, counts, dissenters) -> {
+            final var values = coords.stream().map(Long::intValue).toList();
+            final Key key = radial ? new RadialKey(values) : new OrientedKey((int) stabilizer, values);
+            merged.put(key, new Context(counts, dissenters));
+        });
         return java.util.Collections.unmodifiableMap(merged);
     }
 
     /** The context a grid resolves to (null if its key was never seen). */
-    public Context context(int[] grid) { return contextFor(descriptor(grid), false); }
+    public Context context(int[] grid) { return contextFor(grid); }
 
     /** A named rendering of a key's discriminator coordinates, e.g. "sig=167" (or "sig=167 deg=2"). */
     public String coordString(Key k) {
-        final var names = invariants.stream().filter(d -> d.applies(k.radial())).map(Invariant::name).toList();
+        final var names = chainFor(k).stream().map(Invariant::name).toList();
         final var parts = new ArrayList<String>();
         for (var i = 0; i < k.coords().size() && i < names.size(); i++)
             parts.add(names.get(i) + "=" + k.coords().get(i));
         return String.join(" ", parts);
     }
 
+    /**
+     * The store itself. Exposed because the storage has a shape worth inspecting that {@link #contexts}
+     * cannot show: contexts are the <em>leaves</em>, while the store also holds every prefix, and it is the
+     * prefixes that reveal where a coordinate stopped deciding anything (§5, the census).
+     */
+    public Trie store() { return store; }
+
     /** The symmetry group this Plexus routes by — the set of transforms operations sweep over. */
     public SymmetryGroup group() { return group; }
 
-    /** The injected invariant chain — the coordinate maps whose components the Jacobian volume differentiates. */
+    /**
+     * The <b>declared</b> invariant vocabulary — every coordinate the caller injected. What any given sector
+     * actually routes on is {@link #chainFor}, which may be a subset; under {@link ChainPolicy#uniform()}
+     * the two coincide up to the radial gate.
+     */
     public List<Invariant> invariants() { return invariants; }
 }

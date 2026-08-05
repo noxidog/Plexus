@@ -53,7 +53,18 @@ public interface Invariant extends ToIntFunction<int[]> {
      * that fix a radial shape, which is exactly why it {@link #applies} to radial shapes alone.)
      */
     default boolean invariantUnder(Transform t, int[] grid) {
-        return applyAsInt(t.apply(grid)) == applyAsInt(grid);
+        final var s = Transform.side(grid);
+        return invariantUnder(t, grid, s, s);
+    }
+
+    /**
+     * {@link #invariantUnder(Transform, int[])} on an explicit {@code rows×cols} frame. The square-frame
+     * form infers its side from the cell count, which is wrong on a non-square domain (it would index a
+     * {@code sqrt(n)²} grid over an {@code n}-cell array); a caller holding a rectangular frame must pass
+     * it, as the routing core does everywhere else.
+     */
+    default boolean invariantUnder(Transform t, int[] grid, int rows, int cols) {
+        return applyAsInt(t.apply(grid, rows, cols)) == applyAsInt(grid);
     }
 
     /** Side length of a square grid. */
