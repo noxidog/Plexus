@@ -13,7 +13,7 @@
     <name>Plexus</name>
     <description>A symmetry-routed exact classifier — a router, not a network. Resolves a binary grid
         to a label by pure structural routing: a D4 symmetry verdict refined by an injected chain of
-        D4-invariant coordinates, addressing one context that owns its answer. See PLEXUS_DESIGN.md.
+        D4-invariant coordinates, addressing one context that owns its answer. See the docs/ directory.
     </description>
     <url>https://github.com/noxidog/Plexus</url>
 

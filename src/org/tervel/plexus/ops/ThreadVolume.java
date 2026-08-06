@@ -4,6 +4,7 @@ import org.tervel.plexus.Operation;
 import org.tervel.plexus.Plexus;
 
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.function.ToIntFunction;
 
 /**
@@ -75,7 +76,7 @@ public final class ThreadVolume implements Operation<ThreadVolume.Measure> {
     private long orbit(Plexus plexus, int[] rep) {
         final var centered = Plexus.center(rep);
         if (centered == null) return 0;
-        final var images = new java.util.HashSet<String>();
+        final var images = new HashSet<String>();
         for (final var t : plexus.group().transforms()) images.add(Arrays.toString(t.apply(centered)));
         return images.size();
     }

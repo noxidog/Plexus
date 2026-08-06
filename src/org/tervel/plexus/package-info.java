@@ -4,7 +4,7 @@
  * verdict (radial vs the oriented stabilizer) refined by an injected chain of {@code Invariant}s — and the
  * context owns its label (a majority, overridden for the contradictions the chain could not resolve by an
  * injected {@code ResidualResolver}, by default an exact match against them). No weights, thresholds, or statistics. See
- * {@code PLEXUS_DESIGN.md} for the full design.
+ * the {@code docs/} directory for the full design.
  *
  * <h2>Layout</h2>
  * <ul>

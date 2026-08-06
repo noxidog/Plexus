@@ -14,7 +14,7 @@ import org.tervel.plexus.Plexus.Context;
  *
  * <p>Read outward, the same residual is <b>any scalar with no structural home</b>: the price gap between two
  * structural twins — value that is not <em>in</em> the object — is "hype", a residual of exactly this kind
- * (PLEXUS_DESIGN §11, <i>What the symmetry holds</i>).
+ * (§11, <i>What the symmetry holds</i>).
  */
 public final class ExactExceptions implements ResidualResolver {
 

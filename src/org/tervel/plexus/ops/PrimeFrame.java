@@ -4,7 +4,9 @@ import org.tervel.plexus.Operation;
 import org.tervel.plexus.Plexus;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
 
@@ -85,7 +87,7 @@ public final class PrimeFrame implements Operation<PrimeFrame.Reading> {
 
         final long constants = sizes.getOrDefault(1, 0L);
         final long nonConstant = sizes.entrySet().stream()
-                .filter(e -> e.getKey() > 1).mapToLong(java.util.Map.Entry::getValue).sum();
+                .filter(e -> e.getKey() > 1).mapToLong(Map.Entry::getValue).sum();
 
         // EXACT primality test: the realizable orbit sizes (= divisors) are exactly {1, n}.
         final boolean prime = side > 1 && divisors.size() == 2;
@@ -102,7 +104,7 @@ public final class PrimeFrame implements Operation<PrimeFrame.Reading> {
     /** Re-derive the orbit-size histogram by shifting every length-{@code n} binary row; must match {@code sizes}. */
     private boolean enumerationAgrees(SortedMap<Integer, Long> sizes) {
         final long mask = (1L << side) - 1;
-        final var seen = new java.util.HashSet<Long>();
+        final var seen = new HashSet<Long>();
         final var measured = new TreeMap<Integer, Long>();
         for (long w = 0; w <= mask; w++) {
             if (!seen.add(canonical(w, mask))) continue;   // one representative per orbit

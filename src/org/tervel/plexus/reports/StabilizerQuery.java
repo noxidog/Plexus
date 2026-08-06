@@ -21,7 +21,7 @@ import java.util.TreeSet;
 /**
  * Query by stabilizer. Two modes by constructor — posed and solve — both reached from menu {@code [1]};
  * solve then branches by track (oriented vs radial), so the design counts the same surface as three modes
- * (PLEXUS_DESIGN §8: posed, solve-oriented, solve-radial). The counts are coprime because the tree is
+ * (§8: posed, solve-oriented, solve-radial). The counts are coprime because the tree is
  * uneven: posed is a leaf, solve forks. Same structure, counted at two depths:
  *
  * <ul>
@@ -45,7 +45,7 @@ import java.util.TreeSet;
  *       </ul></li>
  * </ul>
  */
-public class StabilizerQuery implements Report {
+public final class StabilizerQuery implements Report {
 
     private static final String[] QUADRANT =
             {"top-left", "top", "top-right", "left", "centre", "right", "bottom-left", "bottom", "bottom-right"};
@@ -340,7 +340,8 @@ public class StabilizerQuery implements Report {
         }
 
         // Three disjoint verdicts, so the moves partition exactly: allowed, forbidden, and off-map (a move
-        // whose image was never trained — previously miscounted as allowed, since score() rejects with 0).
+        // whose image was never trained — which a score() sweep would miscount as allowed, since score()
+        // rejects with 0).
         final var self = plexus.verdict(posed);
         sb.append("  which moves keep the input on its orbit?  (allowed = same verdict, forbidden = flipped)\n");
         for (final var v : Plexus.Verdict.values())

@@ -16,14 +16,14 @@ import java.util.List;
  * coordinate, this asks the two questions that come <em>before</em> accepting one:
  *
  * <ol>
- *   <li><b>Is each coordinate any good?</b> A coordinate can fail four independent ways, and only one of
+ *   <li><b>Is each coordinate any good?</b> A coordinate can fail five independent ways, and only one of
  *       them (illegality) is about correctness — the rest are about earning its place (§3, minimality).</li>
  *   <li><b>At each collision, is extending even possible?</b> Separating <i>"your chain is too short"</i>
  *       from <i>"no chain can do this"</i> is what makes a diagnostic worth trusting: it says when
  *       <b>not</b> to bother.</li>
  * </ol>
  *
- * <h2>The four grades</h2>
+ * <h2>The five fault grades</h2>
  * <ul>
  *   <li>{@code ILLEGAL} — not constant on an orbit of the <em>oriented</em> track, so orbit-mates route to
  *       different contexts and the class shatters. This breaks the invariance contract

@@ -19,7 +19,7 @@ import java.util.stream.Collectors;
  *
  * <p>Same walk as {@link TopologyReport}, different node-function: the traversal lives in {@link Topology}.
  */
-public class PossibilityReport implements Report {
+public final class PossibilityReport implements Report {
 
     private static final int MAX_MEMBERS = 8;
 

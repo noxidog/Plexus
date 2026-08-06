@@ -13,6 +13,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.stream.Collectors;
 
 /**
@@ -41,7 +42,7 @@ import java.util.stream.Collectors;
  * with too many candidate carriers, no way to pick which difference accounts for it. The expert relocates the
  * failure all the way down to the <b>irreducible twin floor</b>, and names the separating axis when one
  * exists. Expertise does not remove the breakdown; it moves it from "underdetermined among many differences"
- * to "the two are genuine twins" (PLEXUS_DESIGN §11, <i>What the symmetry holds</i>).
+ * to "the two are genuine twins" (§11, <i>What the symmetry holds</i>).
  */
 public final class CollisionDiagnostic implements Operation<String> {
 
@@ -189,7 +190,7 @@ public final class CollisionDiagnostic implements Operation<String> {
 
     /** Render the winning split as {@code value→{pos:neg}} buckets, for the developer to eyeball. */
     private static String renderPartition(Primitive p, List<int[]> members, List<Integer> ls) {
-        final var counts = new java.util.TreeMap<Double, int[]>();
+        final var counts = new TreeMap<Double, int[]>();
         for (var i = 0; i < members.size(); i++) {
             final var v = p.valueOf(members.get(i));
             final var c = counts.computeIfAbsent(round(v), x -> new int[2]);

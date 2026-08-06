@@ -10,7 +10,7 @@ import org.tervel.plexus.ops.Topology;
  * symmetries (if any). Circular (radial / dot) contexts are hidden. The traversal lives in {@link
  * Topology}; this class only decides what a node looks like as text.
  */
-public class TopologyReport implements Report {
+public final class TopologyReport implements Report {
 
     @Override
     public String apply(Plexus plexus) {

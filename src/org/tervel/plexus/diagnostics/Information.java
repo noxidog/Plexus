@@ -7,7 +7,7 @@ import java.util.List;
  * Shannon information over a binary label, and the one question every consumer actually asks of it:
  * <b>how much does partitioning by some coordinate reduce the uncertainty?</b>
  *
- * <p>Two places compute exactly this and used to do it separately: {@link CollisionDiagnostic}, scoring the
+ * <p>Two places compute exactly this: {@link CollisionDiagnostic}, scoring the
  * {@link Primitive} battery against a collision to name the next invariant, and the trie's extension policy,
  * scoring the same battery against a colliding leaf to choose an edge to grow. They differ only in what they
  * hold (labelled grids vs. stored members); the arithmetic is identical, so it lives here once.

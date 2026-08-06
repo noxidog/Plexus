@@ -30,7 +30,7 @@ import java.util.List;
  * lies outside every orbit. It surfaces here only as degenerate cases (the empty grid; an unseen key
  * defaulting to reject in {@link org.tervel.plexus.Plexus#score}; the trivial stabilizer) — it can be
  * <em>labelled</em> but never <em>enacted</em>. This is the framework's own residual: the one thing the
- * symmetry can point at but never hold (PLEXUS_DESIGN §11, <i>What the symmetry holds</i>).
+ * symmetry can point at but never hold (§11, <i>What the symmetry holds</i>).
  */
 public interface SymmetryGroup {
 
@@ -106,7 +106,7 @@ public interface SymmetryGroup {
 
     /**
      * The <b>multiplication table</b>: {@code table[a*n + b]} is the index of {@code a∘b} (apply {@code b},
-     * then {@code a}). This is the group operation the rest of the interface previously did without — every
+     * then {@code a}). This is the group operation the rest of the interface does without — every
      * other method here <em>acts</em> on grids, applying transforms one at a time; multiplication lets the
      * group <em>compute with itself</em>, answering "which single transform is that?" with no grid present.
      *

@@ -8,8 +8,8 @@
  * {@code System.out} formatting, and the dataset file format. Keeping it separate means the dependency runs
  * one way only: the CLI knows about the router, the router knows nothing about the CLI.
  *
- * <p>The same rule retired the experiment runners that used to live beside the core. Anything with a
- * {@code main} is either an application (here) or an assertion that should have been a test (in
- * {@code test/}); the library itself has no entry points.
+ * <p>The same rule keeps experiment runners out of the core. Anything with a {@code main} is either an
+ * application (here) or an assertion that belongs as a test (in {@code test/}); the library itself has no
+ * entry points.
  */
 package org.tervel.plexus.cli;

@@ -2,13 +2,15 @@ package org.tervel.plexus.reports;
 
 import org.tervel.plexus.Plexus;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 /**
  * Evaluates a trained Plexus against a labeled dataset and reports how well its
  * predictions match: a confusion matrix, accuracy, and the base-rate-robust MCC.
  */
-public class ScoreReport implements Report {
+public final class ScoreReport implements Report {
 
     private static final int SAMPLE_FALSE_POSITIVES = 8;
 
@@ -23,9 +25,9 @@ public class ScoreReport implements Report {
     @Override
     public String apply(Plexus plexus) {
         long tp = 0, fp = 0, fn = 0, tn = 0;
-        final var recalled = new java.util.ArrayList<int[]>();
-        final var missed = new java.util.ArrayList<int[]>();
-        final var falsePositives = new java.util.ArrayList<int[]>();
+        final var recalled = new ArrayList<int[]>();
+        final var missed = new ArrayList<int[]>();
+        final var falsePositives = new ArrayList<int[]>();
         for (var i = 0; i < inputs.size(); i++) {
             final var predicted = plexus.score(inputs.get(i));
             final var actual = labels.get(i);
@@ -59,7 +61,7 @@ public class ScoreReport implements Report {
         appendGrids(plexus, sb, String.format("false negatives (%d, missed T's)", fn), missed);
         // Show the most-confident false positives — the ones in the most positive-leaning contexts,
         // i.e. the patterns the model is most convinced are T's despite being negatives.
-        falsePositives.sort(java.util.Comparator.<int[]>comparingDouble(g -> confidence(plexus, g)).reversed());
+        falsePositives.sort(Comparator.<int[]>comparingDouble(g -> confidence(plexus, g)).reversed());
         final var sample = Math.min(SAMPLE_FALSE_POSITIVES, falsePositives.size());
         appendGrids(plexus, sb, String.format("false positives (top %d of %d by score)", sample, falsePositives.size()),
                 falsePositives.subList(0, sample));

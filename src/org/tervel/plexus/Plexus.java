@@ -8,6 +8,8 @@ import org.tervel.plexus.trie.Trie;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
@@ -24,12 +26,12 @@ import java.util.function.BiConsumer;
 public class Plexus implements BiConsumer<int[], Integer> {
 
     /**
-     * A resolved routing key. The symmetry verdict (radial vs oriented) is no longer a column packed
+     * A resolved routing key. The symmetry verdict (radial vs oriented) is not a column packed
      * <em>inside</em> one flat tuple — it is the <b>type</b> of the key. The root router branches on it
      * once, into two strongly-typed tracks ({@link RadialKey}, {@link OrientedKey}), each carrying only the
      * coordinates that apply to it. This keeps every coordinate table uniform within its track (no
-     * ragged radial-only column hanging off an oriented key) and turns the old conditional-array routing
-     * into compile-time polymorphic dispatch (a {@code switch} over the sealed permits).
+     * ragged radial-only column hanging off an oriented key) and makes the routing branch compile-time
+     * polymorphic dispatch (a {@code switch} over the sealed permits).
      *
      * <p>The three accessors are kept for the report/operation surface, which reads keys uniformly:
      * {@link #radial()} is the branch tag, {@link #symmetry()} the oriented stabilizer (0 on the radial
@@ -69,15 +71,15 @@ public class Plexus implements BiConsumer<int[], Integer> {
     }
 
     /**
-     * Which coordinates a sector routes on. The chain is no longer forced to be uniform: by orbit–stabilizer
+     * Which coordinates a sector routes on. The chain need not be uniform: by orbit–stabilizer
      * {@code |orbit| = |G| / |Stab|}, so a coordinate — which must be constant on an orbit to be legal
      * (§3) — has to agree on <em>fewer</em> grids the more symmetry the sector has. The legal vocabulary
      * therefore <b>grows monotonically up the subgroup lattice</b>, reaching everything at full symmetry,
      * where the orbit is a single grid and any function of it is trivially orbit-constant.
      *
-     * <p>The shipped {@link #uniform()} is exactly the historical behaviour — one declared chain, gated only
-     * by the radial verdict — so this generalises the radial/oriented split (a two-level special case) into
-     * a ladder with one rung per conjugacy class of stabilizer, without changing any existing result.
+     * <p>The shipped {@link #uniform()} — one declared chain, gated only by the radial verdict — is the
+     * strict special case: this generalises the radial/oriented split (a two-level ladder) into one rung
+     * per conjugacy class of stabilizer, and every reference measurement is unchanged under {@code uniform()}.
      */
     @FunctionalInterface
     public interface ChainPolicy {
@@ -85,7 +87,7 @@ public class Plexus implements BiConsumer<int[], Integer> {
         /** The coordinates {@code sector} routes on, drawn from the {@code declared} chain. */
         List<Invariant> chainFor(Sector sector, List<Invariant> declared);
 
-        /** The historical policy: one chain for everything, gated only by {@link Invariant#applies}. */
+        /** The default policy: one chain for everything, gated only by {@link Invariant#applies}. */
         static ChainPolicy uniform() {
             return (sector, declared) -> declared.stream().filter(d -> d.applies(sector.radial())).toList();
         }
@@ -123,10 +125,10 @@ public class Plexus implements BiConsumer<int[], Integer> {
      * <p>This is a <b>derived view</b> over a leaf of the store, materialised on demand — not the storage
      * itself, and not mutable. In particular {@code exceptions} is computed rather than sealed: a member is
      * an exception exactly when its own recorded majority contradicts its leaf's, both read from live
-     * counts. That removes the two-pass training the frozen list used to require, and it fixes a defect the
-     * frozen list had — a grid seen under <em>both</em> labels used to be sealed as an exception once per
-     * contradicting example, which flipped it away from its own majority (a grid 3:2 in favour of 1 answered
-     * 0). Comparing majorities answers such a grid with the label it mostly carries.
+     * counts. A frozen list would need a second training pass to seal, and would misfile a grid seen under
+     * <em>both</em> labels — sealed as an exception once per contradicting example, it flips away from its
+     * own majority (a grid 3:2 in favour of 1 answering 0). Comparing majorities answers such a grid with
+     * the label it mostly carries.
      */
     public record Context(long[] counts, List<int[]> exceptions) {
 
@@ -147,7 +149,7 @@ public class Plexus implements BiConsumer<int[], Integer> {
     /**
      * The domain frame. {@code rows, cols > 0} pin an explicit rectangular domain (non-square — paired with a
      * D2 {@link SymmetryGroup}); {@code <= 0} means "infer a square frame per grid" ({@code sqrt(length)}),
-     * the historical default. The frame feeds the geometry of {@link #descriptor} (the canonical stabilizer
+     * the default. The frame feeds the geometry of {@link #descriptor} (the canonical stabilizer
      * and the radial test); it does not change the square path.
      */
     private final int rows;
@@ -284,9 +286,9 @@ public class Plexus implements BiConsumer<int[], Integer> {
     }
 
     /** The applicable discriminator coordinates of a key, by name (e.g. {@code {sig:167}}, or {@code {sig:167, deg:2}}). */
-    public java.util.LinkedHashMap<String, Integer> namedCoords(Key k) {
+    public LinkedHashMap<String, Integer> namedCoords(Key k) {
         final var names = chainFor(k).stream().map(Invariant::name).toList();
-        final var out = new java.util.LinkedHashMap<String, Integer>();
+        final var out = new LinkedHashMap<String, Integer>();
         for (var i = 0; i < k.coords().size() && i < names.size(); i++) out.put(names.get(i), k.coords().get(i));
         return out;
     }
@@ -304,8 +306,8 @@ public class Plexus implements BiConsumer<int[], Integer> {
      * {@code 0}, which is lossy in a way that matters: "the structure routed you to a context whose answer
      * is negative" and "no example ever routed here" are different epistemic states — one is a judgement,
      * the other is the honest admission that routing has nothing to say. A caller that cannot tell them
-     * apart will read silence as denial (the {@link org.tervel.plexus.ops.Searcher} did exactly that,
-     * counting never-explored transforms among a grid's "surviving" symmetries).
+     * apart will read silence as denial (a {@code score}-matching {@link org.tervel.plexus.ops.Searcher}
+     * sweep would count never-explored transforms among a grid's "surviving" symmetries).
      */
     public enum Verdict {
         /** Routed to a context, and the residual resolver answered positive. */
@@ -339,12 +341,11 @@ public class Plexus implements BiConsumer<int[], Integer> {
      * Trains on a labelled dataset — the batch form of {@link #accept}, and public for the same reason
      * {@code accept} is: training is part of the router's surface, not an accident of package layout.
      *
-     * <p>It runs in <b>one</b> pass. The historical second pass existed only to seal each
-     * context's exceptions against a converged majority — a contradiction could not be identified early,
-     * because the majority it contradicts was not yet known. That constraint belonged to the storage, not to
-     * the problem: a leaf that keeps its members derives the same contradictions from live counts at read
-     * time, so a later insert that flips a majority flips them with it. Nothing is frozen, so nothing can go
-     * stale, and {@link #accept} is legal at any point afterwards.
+     * <p>It runs in <b>one</b> pass. A frozen exception list would force a second — a contradiction cannot
+     * be identified early when the majority it contradicts is not yet known — but that constraint belongs to
+     * the storage, not to the problem: a leaf that keeps its members derives the contradictions from live
+     * counts at read time, so a later insert that flips a majority flips them with it. Nothing is frozen, so
+     * nothing can go stale, and {@link #accept} is legal at any point afterwards.
      */
     public void fit(List<int[]> grids, List<Integer> labels) {
         for (var i = 0; i < grids.size(); i++) accept(grids.get(i), labels.get(i));
@@ -355,18 +356,19 @@ public class Plexus implements BiConsumer<int[], Integer> {
 
     /**
      * Every context, as a read-only view for inspection and reporting — the trie's leaves, each rebuilt into
-     * the {@link Key} whose path reaches it and the {@link Context} its counts imply. Oriented first, then
-     * radial. This is a <b>projection</b>, materialised per call, not the storage itself: the store keeps
+     * the {@link Key} whose path reaches it and the {@link Context} its counts imply. Radial track first,
+     * then oriented — {@link Trie#forEachLeaf}'s order, which this simply carries through into the map's
+     * iteration order. This is a <b>projection</b>, materialised per call, not the storage itself: the store keeps
      * paths, and a whole key is only reassembled when a report asks to iterate them.
      */
     public Map<Key, Context> contexts() {
-        final var merged = new java.util.LinkedHashMap<Key, Context>();
+        final var merged = new LinkedHashMap<Key, Context>();
         store.forEachLeaf((radial, stabilizer, coords, counts, dissenters) -> {
             final var values = coords.stream().map(Long::intValue).toList();
             final Key key = radial ? new RadialKey(values) : new OrientedKey((int) stabilizer, values);
             merged.put(key, new Context(counts, dissenters));
         });
-        return java.util.Collections.unmodifiableMap(merged);
+        return Collections.unmodifiableMap(merged);
     }
 
     /** The context a grid resolves to (null if its key was never seen). */

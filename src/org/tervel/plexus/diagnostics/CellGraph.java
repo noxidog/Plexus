@@ -1,5 +1,10 @@
 package org.tervel.plexus.diagnostics;
 
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
 /**
  * The <b>cell-graph</b> of a binary grid: one node per active cell, one edge per orthogonal adjacency.
  * This is the abstract graph the design reads the {@code Signature} off of (mass {@code = V}, connectivity
@@ -17,13 +22,13 @@ final class CellGraph {
     CellGraph(int[] grid) {
         final var side = (int) Math.round(Math.sqrt(grid.length));
         final var nodeOf = new int[grid.length];
-        java.util.Arrays.fill(nodeOf, -1);
+        Arrays.fill(nodeOf, -1);
         var n = 0;
         for (var i = 0; i < grid.length; i++) if (grid[i] == 1) nodeOf[i] = n++;
         this.order = n;
 
-        final var lists = new java.util.ArrayList<java.util.List<Integer>>();
-        for (var v = 0; v < n; v++) lists.add(new java.util.ArrayList<>());
+        final var lists = new ArrayList<List<Integer>>();
+        for (var v = 0; v < n; v++) lists.add(new ArrayList<>());
         var e = 0;
         for (var r = 0; r < side; r++)
             for (var c = 0; c < side; c++) {
@@ -37,7 +42,7 @@ final class CellGraph {
         for (var v = 0; v < n; v++) adj[v] = lists.get(v).stream().mapToInt(Integer::intValue).toArray();
     }
 
-    private static void link(java.util.List<java.util.List<Integer>> lists, int a, int b) {
+    private static void link(List<List<Integer>> lists, int a, int b) {
         lists.get(a).add(b);
         lists.get(b).add(a);
     }
@@ -56,7 +61,7 @@ final class CellGraph {
     int components() {
         final var seen = new boolean[order];
         var comps = 0;
-        final var stack = new java.util.ArrayDeque<Integer>();
+        final var stack = new ArrayDeque<Integer>();
         for (var s = 0; s < order; s++) {
             if (seen[s]) continue;
             comps++;
@@ -85,7 +90,7 @@ final class CellGraph {
         if (order == 0) return 0.0;
         final var shift = maxDegree();
         var x = new double[order];
-        java.util.Arrays.fill(x, 1.0 / Math.sqrt(order));
+        Arrays.fill(x, 1.0 / Math.sqrt(order));
         var mu = 0.0;
         for (var iter = 0; iter < 1000; iter++) {
             final var y = new double[order];

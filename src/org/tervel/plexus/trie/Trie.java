@@ -9,6 +9,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.ToIntFunction;
 
 /**
@@ -321,13 +322,13 @@ public final class Trie {
     }
 
     /** Pre-order visit of every node, in the same deterministic order as {@link #forEachLeaf}. */
-    public void forEachNode(java.util.function.Consumer<NodeView> visitor) {
+    public void forEachNode(Consumer<NodeView> visitor) {
         visit(radialRoot, true, "root", false, visitor);
         visit(orientedRoot, false, "root", false, visitor);
     }
 
     private void visit(Node node, boolean radial, String edge, boolean parentPure,
-                       java.util.function.Consumer<NodeView> visitor) {
+                       Consumer<NodeView> visitor) {
         if (node.total() == 0) return;
         visitor.accept(new NodeView(node.depth, radial, edge, node.counts[0], node.counts[1],
                 node.pure(), parentPure, node.irreducible,

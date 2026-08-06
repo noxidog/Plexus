@@ -1,6 +1,7 @@
 package org.tervel.plexus.diagnostics;
 
 import java.util.List;
+import java.util.function.ToDoubleFunction;
 
 /**
  * A <b>universal topological primitive</b> — a candidate group-invariant coordinate the diagnostic tests
@@ -46,7 +47,7 @@ public interface Primitive {
                    g -> new CellGraph(g).spectralRadius()));
     }
 
-    private static Primitive of(String name, String spec, java.util.function.ToDoubleFunction<int[]> f) {
+    private static Primitive of(String name, String spec, ToDoubleFunction<int[]> f) {
         return new Primitive() {
             @Override public String name()            { return name; }
             @Override public String spec()            { return spec; }

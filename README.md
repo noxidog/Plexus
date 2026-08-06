@@ -48,9 +48,9 @@ implementation 'io.github.noxidog:plexus:1.1.0'
 The REPL menu is a 2-D grid — classify/generate (rows) by node/whole-table (columns):
 
 ```
-                 a node                                   the whole table
-  resolve  ->  [1] stabilizer  [4] grid                   [5] score
-  generate <-  [2] invariant   [3] label  [b] symmetry  [9] atoms  [s] scale  [p] prime   [6] topology  [t] trie  [7] possibility  [v] volume  [8] diagnose  [c] critic
+               a node                                  the whole table
+  resolve  ->  [1] stabilizer  [4] grid                [5] score
+  generate <-  [2] invariant   [3] label  [b] symmetry  [9] atoms  [s] scale  [p] prime    [6] topology  [t] trie  [7] possibility  [v] volume  [8] diagnose  [c] critic
   [q] quit
 ```
 
@@ -92,9 +92,10 @@ mvn test
 
 ## Where to read more
 
-- **[PLEXUS_DESIGN.md](PLEXUS_DESIGN.md)** — the full design: the symmetry core, the invariant chain,
-  the residual boundary, the two inverse operations, decomposition, and the "frames as physics" reading
-  (treating the machine's structure as a coherence argument for analyzing the world).
+- **[docs/](docs/README.md)** — the full design, as a document set: the symmetry core, the invariant
+  chain, the residual boundary, the two inverse operations, decomposition, and the "frames as physics"
+  reading (treating the machine's structure as a coherence argument for analyzing the world). Start at
+  [docs/README.md](docs/README.md) for the index and the reading orders.
 - **[data/README.md](data/README.md)** — the datasets, each posing one slice-question (conservation,
   twin, position, separable, entropy, renormalization) and how to ask it from the menu.
 - **[Plexus: Intuitions from a Symmetry Machine](https://noxidog.substack.com/p/plexus)** — the

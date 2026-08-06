@@ -8,7 +8,7 @@ import java.util.function.UnaryOperator;
  * {@link #apply} and {@link #fixes} derived from it.
  *
  * <p>The primitive is in <em>source</em> form: {@code out[r*cols+c] = in[src(r,c,rows,cols)]}. The
- * {@code int[]}-only overloads assume a <b>square</b> grid (side = {@code sqrt(length)}) — the historical
+ * {@code int[]}-only overloads assume a <b>square</b> grid (side = {@code sqrt(length)}) — the
  * default; the {@code (rows, cols)} overloads carry an explicit rectangular frame (a non-square domain, D2;
  * see {@link Crystallographic}). The four <em>transposing</em> moves (rot90/rot270 and the diagonal mirrors)
  * are only valid on a square frame; rectangular groups exclude them.

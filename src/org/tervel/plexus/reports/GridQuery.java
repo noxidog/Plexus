@@ -16,7 +16,7 @@ import java.util.Iterator;
  * exact grid: for an exception, the broken set is the transforms that carry it onto a genuine, oppositely-
  * labelled grid.
  */
-public class GridQuery implements Report {
+public final class GridQuery implements Report {
 
     private final int[] grid;
 
@@ -45,7 +45,7 @@ public class GridQuery implements Report {
                     ctx.isException(grid) ? "  [this grid is an exception -> score " + ans + "]" : ""));
         }
         // The three verdicts partition the group exactly, so every transform is accounted for — including
-        // the ones that carry the grid off the trained map, which a 0/1 sweep used to file under "surviving".
+        // the ones that carry the grid off the trained map, which a 0/1 sweep would file under "surviving".
         final var self = plexus.verdict(grid);
         sb.append("  does each symmetry break the label?  (surviving = same verdict, broken = flipped)\n");
         for (final var v : Plexus.Verdict.values())

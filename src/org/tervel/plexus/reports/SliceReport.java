@@ -11,7 +11,7 @@ import java.util.function.Predicate;
  * ({@code TARGET}) are both just predicates over a node's named coordinates or its answer — the same walk,
  * a different filter. This is the generic "fix some columns, list the matching contexts" operation.
  */
-public class SliceReport implements Report {
+public final class SliceReport implements Report {
 
     private final String header;
     private final Predicate<Topology.Node> match;

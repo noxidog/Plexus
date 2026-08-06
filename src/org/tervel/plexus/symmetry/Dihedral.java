@@ -12,7 +12,7 @@ public final class Dihedral implements SymmetryGroup {
 
     /**
      * The 8 rigid transforms of a square, in canonical (bit-index) order. Each primitive is
-     * {@code (rows, cols)}-aware; on a square frame ({@code rows == cols}) it reduces to the historical
+     * {@code (rows, cols)}-aware; on a square frame ({@code rows == cols}) it reduces to the
      * single-side formula. The four <b>transposing</b> moves — {@code ROT90}, {@code ROT270},
      * {@code DIAG_MAIN}, {@code DIAG_ANTI} — swap the axes and are valid only when {@code rows == cols}; the
      * rectangular group {@link #d2()} excludes them.
@@ -50,7 +50,7 @@ public final class Dihedral implements SymmetryGroup {
      * <p><b>Decidability lives in the break.</b> The broken transpose is what <em>lets</em> a structure
      * collapse to an answer: the asymmetry between the two axes is the routing coordinate. <b>Re-symmetrizing</b>
      * — restoring the transpose with {@link #d4()} — makes the two axes transpose-equivalent, i.e. a <em>twin</em>,
-     * and so undecidable. The magnitude of the break is the confidence of the collapse (PLEXUS_DESIGN §11).
+     * and so undecidable. The magnitude of the break is the confidence of the collapse (§11).
      */
     public static SymmetryGroup d2() {
         return new Dihedral(List.of(Move.IDENTITY, Move.ROT180, Move.MIRROR_H, Move.MIRROR_V));
