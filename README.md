@@ -84,6 +84,6 @@ The behaviour is asserted, not just printed: the suite checks pose-free keys on 
 
 ## Where to read more
 
-- **[docs/](docs/README.md)** — the design as a document set: the descriptor, the trie and the extrapolation setting, self-extension, slices, and the interpreter.
+- **[docs/](docs/README.md)** — the design as a document set: the descriptor, the trie and the extrapolation setting, self-extension, slices, and the interpreter; and, in the appendices, the "frames as physics" reading (treating the machine's structure as a coherence argument for analyzing the world).
 - **[data/README.md](data/README.md)** — the datasets and the question each one asks.
 - **[Plexus: Intuitions from a Symmetry Machine](https://noxidog.substack.com/p/plexus)** — the companion essay series.

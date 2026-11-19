@@ -1,0 +1,19 @@
+# Appendix G — Complexus
+
+*The forthcoming sibling project the design points at.*
+
+---
+
+## Complexus: the self-extending chain (a forthcoming sibling project)
+
+[§3](../03-extension.md)'s collision diagnostic discovers *which* invariant a separable collision demands and emits its formal specification — then stops, **by design**, leaving the implementation as "manual design work" so the chain stays minimal and meaningful. **Complexus** is the planned downstream project that closes that loop: it turns the diagnostic's advisory blueprint into a *self-extending invariant chain* — wrap the discovered `Primitive` as an `Invariant`, inject it into the chain, refit, and repeat until only the irreducible twins remain (the floor).
+
+Crucially it lives **outside** Plexus, as a separate project that depends on Plexus and never the reverse. That one-directional dependency is the signal to split it off: the discovery engine consumes the router's public seams (`Invariant` injection, `Primitive.battery()`, `CollisionDiagnostic.analyze()`) and produces new invariants, while Plexus stays the minimal, exact, human-curated core. The search/synthesis discipline — and, at its far end, genuine invariant *synthesis* (composition over the primitive algebra as interpreted function trees, **not** a bytecode compiler) — is a different kind of thing that would dilute the core's "minimal by construction" identity if folded in. The same rule that governs the invariant chain ([§3](../01-descriptor.md) — add an axis only when a collision demands it) governs the project boundary: Plexus needs **no changes now**; the seams already suffice, and the one deferred refinement (`analyze()` handing back the chosen `Primitive` object rather than its name) waits for the real consumer to demand it.
+
+Inside Plexus, the loop is **closed for the battery** (`Trie.growing`, [§5](../01-descriptor.md)): a collision detected at insert runs the primitives on that leaf's members and grows one edge locally if any column separates, memorising only what nothing can. Measured, that takes the 9×9 path/fork set from five sealed exceptions to zero. `ChainCritic` ([§3](../01-descriptor.md)) supplies the admission test a candidate must pass — legal, useful, new, earned, not cheating.
+
+What that does **not** do is what Complexus is actually for. The growing configuration selects from a **fixed battery** of four hand-written primitives; it discovers *which* known coordinate a collision needs, never a new one. Complexus is the synthesis step — composition over the primitive algebra as interpreted function trees, searching a space no fixed list enumerates — and that is a different kind of thing, outside, one-directional in its dependency. The extension loop consumes `Primitive.battery()`, `Invariant`, and the orbit test without altering any of them — the seams' sufficiency demonstrated rather than assumed.
+
+The name is the joke: **Complexus** is the complexity-engine of a simplicity-machine — the anti-Plexus one mutated letter away, the surplus the minimality principle exists to forbid. Its tagline is **"Occam's Other Razor — the one that multiplies entities."**
+
+> **TODO — Complexus (planned).** A separate, Plexus-depending project that (1) wraps the collision diagnostic's discovered topological primitives as `Invariant`s and injects them into the runtime chain — the self-extending loop *discover → wrap → inject → refit → halt at the twin floor*, gated on the diagnostic's existing `Fiber` confirmation so it cannot overfit the trained sample; (2) at its far end, *synthesizes* novel composed invariants by search over the primitive algebra (interpreted function trees — no compiler), keeping each composition group-invariant (sums/products of invariants stay invariant) and minimal; (3) preserves Plexus's purity by living one-directionally downstream, consuming public seams only. Plexus is to remain **unchanged** until Complexus surfaces a concrete need.

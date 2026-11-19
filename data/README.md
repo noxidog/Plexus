@@ -1,6 +1,6 @@
 # Datasets — one question each
 
-Every dataset fixes something about the shapes so that training on it and running one command asks a specific question of Plexus. Naming is `<question>-<shape>-<size>`. Run any with:
+Every dataset fixes something about the shapes so that training on it and running one command asks a specific question of Plexus (the "physics as slices" reading, [Appendix A](../docs/appendices/A-mathematical-background.md)). Naming is `<question>-<shape>-<size>`. Run any with:
 
 ```
 java -cp out org.tervel.plexus.cli.Main data/<file>

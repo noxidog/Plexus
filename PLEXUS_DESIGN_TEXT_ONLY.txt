@@ -17,6 +17,19 @@ A symmetry-routed exact classifier: it files every shape by what it is, not wher
  6  The Interpreter  cli.Main and the data-file format. 
  7  The Engine  Lazy grids, templates matched by containment in every pose, expressions, stages and pipelines. 
 
+Appendices
+
+Interpretation, rationale and evidence, kept apart from the operating spec so the spec stays lean.
+
+ Appendix  Contents 
+ A — Mathematical Background  Frames as physics: the coherence argument, read as an interpretive lens. 
+ B — Design Rationale  The seven principles, and what the cut-law dial really chooses. 
+ C — Rejected Designs  Backoff, and materializing the group algebra as trie levels. 
+ D — Performance Notes  Path length as description length, and the fiber cost model. 
+ E — Formal Results  The bounding-box cap, plus a register of every result and where it lives. 
+ F — Worked Examples  The T decomposition, plus a register of the in-place examples. 
+ G — Complexus  The forthcoming sibling project: invariant synthesis, kept downstream. 
+
 Reading orders
 
 - To use it: Design Overview → The Interpreter → ../data/README.md.
@@ -24,6 +37,7 @@ Reading orders
 - To query and generate: The Trie → Slices.
 - To see how it grows: The Trie → Self-Extension.
 - To drive it from a domain layer: The Descriptor → The Engine.
+- To judge it: Appendix B → Appendix E → Appendix A.
 
 Plexus: Design
 
