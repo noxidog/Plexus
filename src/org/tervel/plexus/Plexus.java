@@ -1,402 +1,686 @@
 package org.tervel.plexus;
 
-import org.tervel.plexus.invariants.Invariant;
-import org.tervel.plexus.residual.ExactExceptions;
-import org.tervel.plexus.residual.ResidualResolver;
-import org.tervel.plexus.symmetry.SymmetryGroup;
-import org.tervel.plexus.trie.Trie;
-
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.function.BiConsumer;
+import java.util.Set;
 
 /**
- * A symmetry-keyed classifier. Every input is <b>resolved</b> to a {@link Context} by pure structural
- * routing — a symmetry verdict (rotation-canonical self-symmetry, or "radial" for round shapes) refined
- * by an injected chain of orthogonal, symmetry-invariant {@link Invariant}s (signature, and the opt-in
- * max-degree / position) into a composite {@link Key}, one of two sealed tracks. A context owns its own
- * decision: a majority label, with the leaf decision past the twin floor delegated to an injected
- * {@link org.tervel.plexus.residual.ResidualResolver} (by default an exact set of memorised exceptions —
- * the irreducible symmetry-twin contradictions). The Plexus only routes; the context decides.
+ * Plexus: a symmetry-routed exact classifier that files every shape by what it is, not where it sits.
+ * Two tries, one per lattice:
+ *
+ * <pre>
+ * D4 root / D6 root → box → symmetry walk → mass → joins → [extensions] → orientation → pose → corner
+ * </pre>
+ *
+ * <ul>
+ *   <li>The <b>box</b> (short × long, or the hex extent) and the <b>lattice</b> come from the bounding box of
+ *       the non-zero pixels ({@link Descriptor}).</li>
+ *   <li>The <b>symmetry walk</b> asks one question per symmetry, yes or no, in the lattice's fixed order. Every
+ *       partial symmetry is therefore a node, and a slice over symmetries is a walk.</li>
+ *   <li><b>Mass</b> and <b>joins</b>: filled cells, and adjacent pairs on the shape's own lattice.</li>
+ *   <li><b>Extensions</b> are shape coordinates self-extension inserts when different shapes collide.</li>
+ *   <li>The <b>trailing</b> levels (orientation, pose, corner) are last, so a read only needs them where labels
+ *       disagree across poses or positions.</li>
+ * </ul>
+ *
+ * <p>Training walks the whole path, adding one to every node passed, and keeps the grid at the leaf. Reading
+ * walks until the path breaks off; a pure node may then stand in for the missing child if the {@link Extrapolate}
+ * setting allows that level (an {@link Verdict#ASSUMED} answer). Slices walk the same tries under constraints and
+ * stream every matching grid, trained or assumed, to a callback.
+ *
+ * <p>All grids share one input frame ({@code inRows × inCols}), row-major. It is how a grid's cells are read
+ * into rows and columns, and where slices place the grids they generate.
  */
-public class Plexus implements BiConsumer<int[], Integer> {
+public final class Plexus {
 
-    /**
-     * A resolved routing key. The symmetry verdict (radial vs oriented) is not a column packed
-     * <em>inside</em> one flat tuple — it is the <b>type</b> of the key. The root router branches on it
-     * once, into two strongly-typed tracks ({@link RadialKey}, {@link OrientedKey}), each carrying only the
-     * coordinates that apply to it. This keeps every coordinate table uniform within its track (no
-     * ragged radial-only column hanging off an oriented key) and makes the routing branch compile-time
-     * polymorphic dispatch (a {@code switch} over the sealed permits).
-     *
-     * <p>The three accessors are kept for the report/operation surface, which reads keys uniformly:
-     * {@link #radial()} is the branch tag, {@link #symmetry()} the oriented stabilizer (0 on the radial
-     * branch, which has no orientation), {@link #coords()} the applicable invariant coordinates.
-     */
-    public sealed interface Key permits RadialKey, OrientedKey {
-        boolean radial();
-        int symmetry();
-        List<Integer> coords();
+    // ---- the trie --------------------------------------------------------------------------------
+
+    /** What a node's children split on: a level, plus the walk index or the extension primitive. */
+    record Coordinate(Level level, int index, Primitive primitive) {
+        static final Coordinate BOX = new Coordinate(Level.BOX, 0, null);
+        static Coordinate symmetry(int i) { return new Coordinate(Level.SYMMETRY, i, null); }
+        static final Coordinate MASS = new Coordinate(Level.MASS, 0, null);
+        static final Coordinate JOINS = new Coordinate(Level.JOINS, 0, null);
+        static Coordinate extension(Primitive p) { return new Coordinate(Level.EXTENSION, 0, p); }
+        static final Coordinate ORIENTATION = new Coordinate(Level.ORIENTATION, 0, null);
+        static final Coordinate POSE = new Coordinate(Level.POSE, 0, null);
+        static final Coordinate POSITION = new Coordinate(Level.POSITION, 0, null);
     }
 
-    /** The radial track: round shapes with no orientation. Keyed on position-sensitive coordinates only. */
-    public record RadialKey(List<Integer> coords) implements Key {
-        @Override public boolean radial()  { return true; }
-        @Override public int     symmetry() { return 0; }     // no orientation ⇒ no stabilizer column
-    }
+    /** One trained grid, kept at its leaf so exact exceptions and subtree rebuilds have the evidence. */
+    record Member(int[] grid, int label, Descriptor descriptor) { }
 
-    /** The oriented track: shapes with a meaningful orientation. Keyed on the canonical stabilizer + coords. */
-    public record OrientedKey(int symmetry, List<Integer> coords) implements Key {
-        @Override public boolean radial() { return false; }
-    }
+    static final class Node {
+        Coordinate splitOn;                                   // null at a leaf
+        final Map<Long, Node> children = new LinkedHashMap<>();
+        final long[] counts = new long[2];
+        final List<Member> members = new ArrayList<>();      // leaves only
+        final Node parent;
+        final Coordinate edge;                                // the parent's splitOn (null at a root)
+        final long value;                                     // the edge value
+        final Kind kind;                                      // null at a root
+        final int depth;
 
-    /**
-     * A <b>sector</b> — a symmetry class, and the unit at which the invariant chain may differ. Orbit-mates
-     * have conjugate stabilizers and therefore the same canonical mask, so a sector is a union of whole
-     * orbits: selecting a chain by sector can never route orbit-mates apart.
-     *
-     * <p>Radial is deliberately a <em>single</em> sector ({@code stabilizer == 0}). Subdividing it would
-     * require putting the stabilizer into {@link RadialKey}, which drops it on purpose (a round shape has no
-     * orientation, §4); without that column two radial sectors running different chains could produce equal
-     * coordinate lists and silently merge. The oriented track carries its stabilizer in the key, so it
-     * subdivides safely.
-     */
-    public record Sector(boolean radial, int stabilizer) {
-        /** The sector a key belongs to — every key determines one, which is what makes the chain recoverable. */
-        public static Sector of(Key k) { return new Sector(k.radial(), k.symmetry()); }
-    }
-
-    /**
-     * Which coordinates a sector routes on. The chain need not be uniform: by orbit–stabilizer
-     * {@code |orbit| = |G| / |Stab|}, so a coordinate — which must be constant on an orbit to be legal
-     * (§3) — has to agree on <em>fewer</em> grids the more symmetry the sector has. The legal vocabulary
-     * therefore <b>grows monotonically up the subgroup lattice</b>, reaching everything at full symmetry,
-     * where the orbit is a single grid and any function of it is trivially orbit-constant.
-     *
-     * <p>The shipped {@link #uniform()} — one declared chain, gated only by the radial verdict — is the
-     * strict special case: this generalises the radial/oriented split (a two-level ladder) into one rung
-     * per conjugacy class of stabilizer, and every reference measurement is unchanged under {@code uniform()}.
-     */
-    @FunctionalInterface
-    public interface ChainPolicy {
-
-        /** The coordinates {@code sector} routes on, drawn from the {@code declared} chain. */
-        List<Invariant> chainFor(Sector sector, List<Invariant> declared);
-
-        /** The default policy: one chain for everything, gated only by {@link Invariant#applies}. */
-        static ChainPolicy uniform() {
-            return (sector, declared) -> declared.stream().filter(d -> d.applies(sector.radial())).toList();
+        Node(Coordinate splitOn, Node parent, Coordinate edge, long value, Kind kind) {
+            this.splitOn = splitOn; this.parent = parent; this.edge = edge; this.value = value; this.kind = kind;
+            this.depth = parent == null ? 0 : parent.depth + 1;
         }
 
-        /**
-         * <b>Withhold</b> coordinates from low-symmetry sectors: the {@code withheld} coordinates route only
-         * in oriented sectors whose orbit is at most {@code maxOrbit}; everywhere else the chain is the
-         * declared vocabulary minus them. This is the theorem above made operational — a coordinate too
-         * pose-dependent to be legal in the trivial sector (orbit 8 under D4) can be perfectly legal where
-         * the orbit is 1 or 2, because there are that many fewer grids for it to agree across.
-         *
-         * <p>Withholding rather than appending matters twice over: a coordinate the caller already declared
-         * would otherwise appear <em>twice</em> in the rich sectors, and rebuilding the chain by filtering
-         * the declared list preserves its <b>order</b> — which is load-bearing, since chain order is the
-         * trie's rung order (§5). Pass the same {@link Invariant} instances that appear in the declared
-         * chain; membership is by equality.
-         *
-         * <p>Radial is exempt, being a single sector ({@link Sector}).
-         */
-        static ChainPolicy byOrbit(SymmetryGroup group, int maxOrbit, List<Invariant> withheld) {
-            final var order = group.transforms().size();
-            return (sector, declared) -> {
-                final var applicable = declared.stream().filter(d -> d.applies(sector.radial()));
-                final var fixers = Integer.bitCount(sector.stabilizer());
-                final var rich = !sector.radial() && fixers > 0 && order / fixers <= maxOrbit;
-                return rich ? applicable.toList() : applicable.filter(d -> !withheld.contains(d)).toList();
-            };
-        }
+        boolean pure() { return counts[0] == 0 || counts[1] == 0; }
+        int answer() { return counts[1] > counts[0] ? 1 : 0; }
     }
 
+    private final int inRows;
+    private final int inCols;
+    private final boolean selfExtend;
+    private final Set<Lattice> lattices;
+    private final Node d4 = new Node(Coordinate.BOX, null, null, 0, null);
+    private final Node d6 = new Node(Coordinate.BOX, null, null, 0, null);
+
+    /** A router over {@code inRows × inCols} input grids: the default lattices, self-extension on. */
+    public Plexus(int inRows, int inCols) { this(inRows, inCols, Lattice.DEFAULT, true); }
+
     /**
-     * One routing context (bucket): its {@code [neg, pos]} counts and its exact exceptions. It owns its
-     * answer.
+     * A router over {@code inRows × inCols} input grids on these lattices, self-extension on. For example
+     * {@code new Plexus(8, 8, Lattice.SQUARE_8)} keeps every shape square with 8 neighbours, and
+     * {@code new Plexus(8, 8, Lattice.SQUARE_8, Lattice.HEX_6)} also tries hex.
      *
-     * <p>This is a <b>derived view</b> over a leaf of the store, materialised on demand — not the storage
-     * itself, and not mutable. In particular {@code exceptions} is computed rather than sealed: a member is
-     * an exception exactly when its own recorded majority contradicts its leaf's, both read from live
-     * counts. A frozen list would need a second training pass to seal, and would misfile a grid seen under
-     * <em>both</em> labels — sealed as an exception once per contradicting example, it flips away from its
-     * own majority (a grid 3:2 in favour of 1 answering 0). Comparing majorities answers such a grid with
-     * the label it mostly carries.
+     * @throws IllegalArgumentException if the lattices are not a legal set ({@link Lattice#checked(Set)})
      */
-    public record Context(long[] counts, List<int[]> exceptions) {
-
-        /** The context's answer: its majority label. */
-        public int answer() { return counts[1] > counts[0] ? 1 : 0; }
-        /** Whether this context's majority is the positive class. */
-        public boolean isTarget() { return answer() == 1; }
-        /** Whether {@code g} is a memorised exception of this context. */
-        public boolean isException(int[] g) { return exceptions.stream().anyMatch(e -> Arrays.equals(e, g)); }
-        public int  exceptionCount() { return exceptions.size(); }
-        public long pos() { return counts[1]; }
-        public long neg() { return counts[0]; }
-    }
-
-    private final SymmetryGroup group;
-    private final List<Invariant> invariants;
+    public Plexus(int inRows, int inCols, Lattice... lattices) { this(inRows, inCols, Lattice.checked(lattices), true); }
 
     /**
-     * The domain frame. {@code rows, cols > 0} pin an explicit rectangular domain (non-square — paired with a
-     * D2 {@link SymmetryGroup}); {@code <= 0} means "infer a square frame per grid" ({@code sqrt(length)}),
-     * the default. The frame feeds the geometry of {@link #descriptor} (the canonical stabilizer
-     * and the radial test); it does not change the square path.
-     */
-    private final int rows;
-    private final int cols;
-
-    /**
-     * The intra-context decision policy for the part structure cannot resolve — the residual past the twin
-     * floor (§10.4). Routing is exact and deterministic up to the context; this resolver owns the leaf
-     * decision inside it. It is injected (a peer of the group and chain): the deterministic
-     * {@link ExactExceptions} is what ships, but a brute-force or learned resolver can take its place.
-     */
-    private final ResidualResolver resolver;
-
-    /** Which of the declared coordinates each symmetry class routes on ({@link ChainPolicy}). */
-    private final ChainPolicy policy;
-
-    /**
-     * The store. Keys are held as <b>paths</b> — the track, then the stabilizer edge, then one edge per
-     * chain coordinate — rather than as whole tuples in a hash map, so every prefix of a key is a live node
-     * and not a thing recomputed by regrouping. {@link Context} is a <em>view</em> over a leaf, derived from
-     * live counts on demand; it is not stored, which is why there is no seal pass here (an exception is a
-     * member whose own majority contradicts its leaf's, and both sides move together).
+     * A router over {@code inRows × inCols} input grids on {@code lattices}, with self-extension on or off.
+     * Both are fixed for the router's life: they define the key, so every grid it ever describes must be
+     * described the same way.
      *
-     * <p>The trie is constructed with an <b>empty extension vocabulary</b>, so its paths are exactly the
-     * descriptor's keys and {@link #contexts} is a faithful enumeration. Handing it a vocabulary turns on
-     * local self-extension (§5), which deliberately makes paths longer than the declared key — a different
-     * contract, and not the one the router's public {@code Key} surface promises.
+     * @throws IllegalArgumentException if the lattices are not a legal set ({@link Lattice#checked(Set)})
      */
-    private final Trie store = new Trie(this);
-
-    /**
-     * Construct a router from its three injected parts: the symmetry {@code group}, the {@code invariants}
-     * chain, and the {@code resolver} for the residual past the twin floor. All three are the caller's
-     * choice — the resolver is a peer of the group and chain, not a hidden default — so the deterministic
-     * {@link ExactExceptions} is passed in explicitly rather than assumed here.
-     */
-    public Plexus(SymmetryGroup group, List<Invariant> invariants, ResidualResolver resolver) {
-        this(group, invariants, resolver, -1, -1);
+    public Plexus(int inRows, int inCols, Set<Lattice> lattices, boolean selfExtend) {
+        this.inRows = inRows; this.inCols = inCols;
+        this.lattices = Lattice.checked(lattices);
+        this.selfExtend = selfExtend;
     }
 
-    /**
-     * Construct a router over an explicit {@code rows×cols} domain. For a square domain pass the
-     * three-argument constructor (or {@code rows == cols}); for a rectangular domain pass the two distinct
-     * dimensions and a D2 group ({@link org.tervel.plexus.symmetry.Dihedral#d2()}).
-     */
-    public Plexus(SymmetryGroup group, List<Invariant> invariants, ResidualResolver resolver, int rows, int cols) {
-        this(group, invariants, resolver, rows, cols, ChainPolicy.uniform());
+    /** The lattices this router was built on. */
+    public Set<Lattice> lattices() { return lattices; }
+
+    /** Whether self-extension runs after training. */
+    public boolean selfExtends() { return selfExtend; }
+
+    public int inRows() { return inRows; }
+    public int inCols() { return inCols; }
+
+    /** The descriptor this router reads off {@code grid}. */
+    public Descriptor describe(int[] grid) { return Descriptor.of(grid, inRows, inCols, lattices); }
+
+    private Node rootOf(Root r) { return r == Root.D6 ? d6 : d4; }
+
+    // ---- training -----------------------------------------------------------------------------------
+
+    /** Train on one grid, then self-extend (if on). Legal at any time. */
+    public void accept(int[] grid, int label) {
+        insert(grid, label);
+        if (selfExtend) extend();
     }
 
-    /**
-     * Construct a router whose chain may differ <b>per sector</b>. The {@code invariants} list becomes the
-     * <em>declared</em> vocabulary and {@code policy} decides which of it each symmetry class actually routes
-     * on; {@link ChainPolicy#uniform()} reproduces the single-chain behaviour of the other constructors.
-     */
-    public Plexus(SymmetryGroup group, List<Invariant> invariants, ResidualResolver resolver,
-                  int rows, int cols, ChainPolicy policy) {
-        this.group = group;
-        this.invariants = List.copyOf(invariants);
-        this.resolver = resolver;
-        this.rows = rows;
-        this.cols = cols;
-        this.policy = policy;
-    }
-
-    /** Row count of {@code g}'s frame — the pinned domain height, or the inferred square side. */
-    public int rows(int[] g) { return rows > 0 ? rows : (int) Math.round(Math.sqrt(g.length)); }
-
-    /** Column count of {@code g}'s frame — the pinned domain width (row stride), or the inferred square side. */
-    public int cols(int[] g) { return cols > 0 ? cols : (int) Math.round(Math.sqrt(g.length)); }
-
-    // ---- Routing: resolve a shape to its context key ---------------------------------------
-
-    /**
-     * Resolves a shape to its key: the symmetry verdict (radial, or the rotation-canonical stabilizer)
-     * plus the coordinates of every invariant that {@link Invariant#applies} to that verdict.
-     */
-    public Key descriptor(int[] g) {
-        final var sector = sector(g);
-        final var coords = chainFor(sector).stream().map(d -> d.applyAsInt(g)).toList();
-        return sector.radial() ? new RadialKey(coords) : new OrientedKey(sector.stabilizer(), coords);
-    }
-
-    /** The symmetry class {@code g} routes in — the radial verdict, plus the canonical stabilizer if oriented. */
-    public Sector sector(int[] g) {
-        final var radial = isRadial(g);
-        return new Sector(radial, radial ? 0 : group.canonicalStabilizer(g, rows(g), cols(g)));
-    }
-
-    /** The coordinates a sector routes on — the declared chain as filtered by the injected {@link ChainPolicy}. */
-    public List<Invariant> chainFor(Sector sector) { return policy.chainFor(sector, invariants); }
-
-    /** The coordinates behind a key. Every key determines its sector, so its chain is always recoverable. */
-    public List<Invariant> chainFor(Key key) { return chainFor(Sector.of(key)); }
-
-    /** The context a grid resolves to, as a view over its leaf; null if the full path was never trained. */
-    private Context contextFor(int[] grid) {
-        final var leaf = store.leafFor(grid);
-        return leaf == null ? null : new Context(leaf.counts(), leaf.dissenters());
-    }
-
-    /** Verdict: a round shape (some rotation fixes its centred form) has no orientation. Public because it
-     *  is the cheapest prefix of {@link #descriptor} — a per-edge (lazy) router needs the track verdict
-     *  without paying for the stabilizer and the chain. */
-    public boolean isRadial(int[] g) {
-        final var b = Invariant.box(g, rows(g), cols(g));
-        if (b[0] != b[1]) return false;                 // non-square box ⇒ rot90 transposes it ⇒ can't be radial
-        final var c = centered(g, rows(g), cols(g));
-        return c != null && group.rotationFixes(c, rows(g), cols(g));
-    }
-
-    /** Translates the blob so its bounding box is centered on a {@code rows×cols} grid; null if empty. */
-    private static int[] centered(int[] g, int rows, int cols) {
-        int minR = rows, maxR = -1, minC = cols, maxC = -1;
-        for (var i = 0; i < g.length; i++) if (g[i] == 1) {
-            final int r = i / cols, c = i % cols;
-            minR = Math.min(minR, r); maxR = Math.max(maxR, r);
-            minC = Math.min(minC, c); maxC = Math.max(maxC, c);
-        }
-        if (maxR < 0) return null;
-        final var offR = (rows - 1 - (maxR - minR)) / 2 - minR;
-        final var offC = (cols - 1 - (maxC - minC)) / 2 - minC;
-        final var out = new int[g.length];
-        for (var i = 0; i < g.length; i++) if (g[i] == 1) {
-            final int r = i / cols + offR, c = i % cols + offC;
-            if (r >= 0 && r < rows && c >= 0 && c < cols) out[r * cols + c] = 1;
-        }
-        return out;
-    }
-
-    /** Public centering: translate the blob so its bounding box sits in the middle of a square grid (null if empty). */
-    public static int[] center(int[] g) {
-        final var s = (int) Math.round(Math.sqrt(g.length));
-        return centered(g, s, s);
-    }
-
-    /** The applicable discriminator coordinates of a key, by name (e.g. {@code {sig:167}}, or {@code {sig:167, deg:2}}). */
-    public LinkedHashMap<String, Integer> namedCoords(Key k) {
-        final var names = chainFor(k).stream().map(Invariant::name).toList();
-        final var out = new LinkedHashMap<String, Integer>();
-        for (var i = 0; i < k.coords().size() && i < names.size(); i++) out.put(names.get(i), k.coords().get(i));
-        return out;
-    }
-
-    // ---- Training / scoring ----------------------------------------------------------------
-
-    /** One online insert: walk the path, bump every rung. Legal at any time — there is nothing to reseal. */
-    @Override
-    public void accept(int[] input, Integer label) {
-        store.add(input, label == 1 ? 1 : 0);
-    }
-
-    /**
-     * The three <b>distinct</b> outcomes of a resolution. {@link #score} collapses the last two onto
-     * {@code 0}, which is lossy in a way that matters: "the structure routed you to a context whose answer
-     * is negative" and "no example ever routed here" are different epistemic states — one is a judgement,
-     * the other is the honest admission that routing has nothing to say. A caller that cannot tell them
-     * apart will read silence as denial (a {@code score}-matching {@link org.tervel.plexus.ops.Searcher}
-     * sweep would count never-explored transforms among a grid's "surviving" symmetries).
-     */
-    public enum Verdict {
-        /** Routed to a context, and the residual resolver answered positive. */
-        POSITIVE,
-        /** Routed to a context, and the residual resolver answered negative. */
-        NEGATIVE,
-        /** No context — this key was never trained. Not a negative: an absence of evidence. */
-        UNSEEN
-    }
-
-    /**
-     * Resolve a grid to its {@link Verdict} — the full-information form of {@link #score}. Same single
-     * lookup; it simply declines to spend the reject signal.
-     */
-    public Verdict verdict(int[] grid) {
-        final var c = contextFor(grid);
-        if (c == null) return Verdict.UNSEEN;                      // unseen key → nothing to say
-        return resolver.resolve(c, grid) == 1 ? Verdict.POSITIVE : Verdict.NEGATIVE;
-    }
-
-    /**
-     * The binary answer: 1 for a positive resolution, 0 for both a negative one and an unseen key. Retained
-     * as the scoring surface (a confusion matrix wants a bit), but prefer {@link #verdict} anywhere the
-     * difference between "judged negative" and "never seen" can change what the caller concludes.
-     */
-    public int score(int[] inputs) {
-        return verdict(inputs) == Verdict.POSITIVE ? 1 : 0;
-    }
-
-    /**
-     * Trains on a labelled dataset — the batch form of {@link #accept}, and public for the same reason
-     * {@code accept} is: training is part of the router's surface, not an accident of package layout.
-     *
-     * <p>It runs in <b>one</b> pass. A frozen exception list would force a second — a contradiction cannot
-     * be identified early when the majority it contradicts is not yet known — but that constraint belongs to
-     * the storage, not to the problem: a leaf that keeps its members derives the contradictions from live
-     * counts at read time, so a later insert that flips a majority flips them with it. Nothing is frozen, so
-     * nothing can go stale, and {@link #accept} is legal at any point afterwards.
-     */
+    /** Train on a labelled dataset in one pass, then self-extend once. */
     public void fit(List<int[]> grids, List<Integer> labels) {
-        for (var i = 0; i < grids.size(); i++) accept(grids.get(i), labels.get(i));
-        resolver.seal(this, grids, labels);   // structure has converged; let the residual policy train itself
+        for (var i = 0; i < grids.size(); i++) insert(grids.get(i), labels.get(i));
+        if (selfExtend) extend();
     }
 
-    // ---- Routing accessors (the context decides; these just expose the routing) -------------
-
-    /**
-     * Every context, as a read-only view for inspection and reporting — the trie's leaves, each rebuilt into
-     * the {@link Key} whose path reaches it and the {@link Context} its counts imply. Radial track first,
-     * then oriented — {@link Trie#forEachLeaf}'s order, which this simply carries through into the map's
-     * iteration order. This is a <b>projection</b>, materialised per call, not the storage itself: the store keeps
-     * paths, and a whole key is only reassembled when a report asks to iterate them.
-     */
-    public Map<Key, Context> contexts() {
-        final var merged = new LinkedHashMap<Key, Context>();
-        store.forEachLeaf((radial, stabilizer, coords, counts, dissenters) -> {
-            final var values = coords.stream().map(Long::intValue).toList();
-            final Key key = radial ? new RadialKey(values) : new OrientedKey((int) stabilizer, values);
-            merged.put(key, new Context(counts, dissenters));
-        });
-        return Collections.unmodifiableMap(merged);
+    private void insert(int[] grid, int label) {
+        final var d = describe(grid);
+        final var root = rootOf(d.root());
+        root.counts[label == 1 ? 1 : 0]++;
+        descend(root, new Member(grid.clone(), label == 1 ? 1 : 0, d));
     }
 
-    /** The context a grid resolves to (null if its key was never seen). */
-    public Context context(int[] grid) { return contextFor(grid); }
+    /** Walk {@code m} down from {@code node} (whose counts already include it), creating nodes as needed. */
+    private static void descend(Node node, Member m) {
+        while (node.splitOn != null) {
+            final var v = value(node.splitOn, m.descriptor());
+            final var kind = node.kind == null ? m.descriptor().kind() : node.kind;
+            final var from = node;
+            node = node.children.computeIfAbsent(v, k -> new Node(next(from.splitOn, kind), from, from.splitOn, k, kind));
+            node.counts[m.label()]++;
+        }
+        node.members.add(m);
+    }
 
-    /** A named rendering of a key's discriminator coordinates, e.g. "sig=167" (or "sig=167 deg=2"). */
-    public String coordString(Key k) {
-        final var names = chainFor(k).stream().map(Invariant::name).toList();
-        final var parts = new ArrayList<String>();
-        for (var i = 0; i < k.coords().size() && i < names.size(); i++)
-            parts.add(names.get(i) + "=" + k.coords().get(i));
-        return String.join(" ", parts);
+    /** The coordinate a node splits on after {@code c}, in the default order for {@code kind}. */
+    static Coordinate next(Coordinate c, Kind kind) {
+        final var walk = Groups.walkFor(kind).size();
+        return switch (c.level()) {
+            case BOX -> kind == Kind.EMPTY ? null : walk > 0 ? Coordinate.symmetry(0) : Coordinate.MASS;
+            case SYMMETRY -> c.index() + 1 < walk ? Coordinate.symmetry(c.index() + 1) : Coordinate.MASS;
+            case MASS -> Coordinate.JOINS;
+            case JOINS, EXTENSION -> kind == Kind.SQUARE ? Coordinate.POSE : Coordinate.ORIENTATION;
+            case ORIENTATION -> Coordinate.POSE;
+            case POSE -> Coordinate.POSITION;
+            case POSITION -> null;
+        };
+    }
+
+    static long value(Coordinate c, Descriptor d) {
+        return switch (c.level()) {
+            case BOX -> d.kind() == Kind.EMPTY ? 0 : d.boxShort() * 4096L + d.boxLong();
+            case SYMMETRY -> d.answers()[c.index()] ? 1 : 0;
+            case MASS -> d.mass();
+            case JOINS -> d.joins();
+            case EXTENSION -> c.primitive().value(d.canonical(), d.lattice());
+            case ORIENTATION -> d.orientation();
+            case POSE -> d.pose();
+            case POSITION -> d.cornerRow() * 4096L + d.cornerCol();
+        };
+    }
+
+    // ---- self-extension -----------------------------------------------------------------------------
+
+    /**
+     * Grow shape coordinates where different shapes collide. A junction (the node just above the trailing
+     * levels) that holds both labels is checked: if its members are all one shape, the trailing levels already
+     * separate them and nothing is added. If they are several shapes, the battery primitive with the best
+     * information gain (and not already on the path) is inserted there, and the subtree is rebuilt from the
+     * stored members. Repeats until no junction changes.
+     */
+    public void extend() {
+        for (var changed = true; changed; ) {
+            changed = false;
+            for (final var root : List.of(d4, d6))
+                for (final var node : junctions(root))
+                    if (extendAt(node)) changed = true;
+        }
+    }
+
+    private static List<Node> junctions(Node root) {
+        final var out = new ArrayList<Node>();
+        collect(root, out);
+        return out;
+    }
+
+    private static void collect(Node n, List<Node> out) {
+        if (n.splitOn != null && n.kind != null && n.splitOn.equals(next(Coordinate.JOINS, n.kind))) out.add(n);
+        for (final var c : n.children.values()) collect(c, out);
+    }
+
+    private boolean extendAt(Node node) {
+        if (node.pure()) return false;
+        final var members = membersUnder(node);
+        if (members.stream().map(m -> m.descriptor().canonical()).distinct().count() < 2) return false;
+        final var used = new HashSet<String>();
+        for (var n = node; n != null; n = n.parent)
+            if (n.splitOn != null && n.splitOn.level() == Level.EXTENSION) used.add(n.splitOn.primitive().name());
+        Primitive best = null;
+        var bestGain = 1e-12;
+        for (final var p : Primitive.BATTERY) {
+            if (used.contains(p.name())) continue;
+            final var parts = new HashMap<Integer, long[]>();
+            for (final var m : members)
+                parts.computeIfAbsent(p.value(m.descriptor().canonical(), m.descriptor().lattice()), k -> new long[2])[m.label()]++;
+            final var gain = Information.gain(node.counts, parts.values());
+            if (gain > bestGain) { bestGain = gain; best = p; }
+        }
+        if (best == null) return false;
+        node.splitOn = Coordinate.extension(best);
+        node.children.clear();
+        for (final var m : members) descend(node, m);
+        return true;
     }
 
     /**
-     * The store itself. Exposed because the storage has a shape worth inspecting that {@link #contexts}
-     * cannot show: contexts are the <em>leaves</em>, while the store also holds every prefix, and it is the
-     * prefixes that reveal where a coordinate stopped deciding anything (§5, the census).
+     * The mixed nodes that matter, and what resolves each. At a junction (the node just above the trailing
+     * levels): one shape split by orientation, pose or corner; several shapes separated by an inserted
+     * coordinate; or several shapes no primitive separates. At a leaf: the same grid trained with both labels,
+     * or different shapes that share one full key. Other mixed nodes (above a junction, or between it and the
+     * leaves) are not listed.
      */
-    public Trie store() { return store; }
+    public String diagnose() {
+        final var sb = new StringBuilder("mixed nodes and what resolves them\n");
+        var found = 0;
+        for (final var root : List.of(d4, d6)) {
+            final var nodes = new ArrayList<Node>();
+            collectAll(root, nodes);
+            for (final var n : nodes) {
+                if (n.pure() || n.parent == null) continue;
+                final String verdict;
+                if (n.splitOn != null && n.splitOn.level() == Level.EXTENSION)
+                    verdict = "several shapes: separated by " + n.splitOn.primitive().name();
+                else if (n.splitOn != null && n.splitOn.equals(next(Coordinate.JOINS, n.kind))) {
+                    final var shapes = membersUnder(n).stream().map(m -> m.descriptor().canonical()).distinct().count();
+                    verdict = shapes == 1 ? "one shape: separated by orientation, pose or corner"
+                            : "several shapes: no primitive separates them; kept as members at the leaves";
+                } else if (n.splitOn == null) {
+                    final var grids = n.members.stream().map(m -> Arrays.toString(m.grid())).distinct().count();
+                    verdict = grids == 1 ? "the same grid trained with both labels"
+                            : "different shapes with one full key: each stored grid answers with its own label";
+                } else continue;
+                found++;
+                sb.append("  ").append(context(n)).append('\n').append("    -> ").append(verdict).append('\n');
+            }
+        }
+        if (found == 0) sb.append("  none: every node is pure\n");
+        return sb.toString();
+    }
 
-    /** The symmetry group this Plexus routes by — the set of transforms operations sweep over. */
-    public SymmetryGroup group() { return group; }
+    private static void collectAll(Node n, List<Node> out) {
+        out.add(n);
+        for (final var c : n.children.values()) collectAll(c, out);
+    }
+
+    private static List<Member> membersUnder(Node n) {
+        final var out = new ArrayList<Member>();
+        gather(n, out);
+        return out;
+    }
+
+    private static void gather(Node n, List<Member> out) {
+        out.addAll(n.members);
+        for (final var c : n.children.values()) gather(c, out);
+    }
+
+    // ---- reading ------------------------------------------------------------------------------------
+
+    /** Read {@code grid} under the default setting ({@link Extrapolate#SYMMETRY}). */
+    public Answer read(int[] grid) { return read(grid, Extrapolate.SYMMETRY); }
+
+    /** Read {@code grid}: follow its path; where it breaks off, a pure node may stand in if the extrapolation setting allows. */
+    public Answer read(int[] grid, Extrapolate extrapolate) {
+        final var d = describe(grid);
+        var node = rootOf(d.root());
+        while (node.splitOn != null) {
+            final var child = node.children.get(value(node.splitOn, d));
+            if (child == null) {
+                if (standsIn(node, d, extrapolate)) return new Answer(Verdict.ASSUMED, node.answer(), context(node));
+                return new Answer(Verdict.UNSEEN, -1, context(node));
+            }
+            node = child;
+        }
+        final var label = resolve(node, grid);
+        return new Answer(label == 1 ? Verdict.POSITIVE : Verdict.NEGATIVE, label, context(node));
+    }
 
     /**
-     * The <b>declared</b> invariant vocabulary — every coordinate the caller injected. What any given sector
-     * actually routes on is {@link #chainFor}, which may be a subset; under {@link ChainPolicy#uniform()}
-     * the two coincide up to the radial gate.
+     * Whether pure {@code node} may answer for {@code d}, whose child there is missing. The setting must allow the
+     * level. Under {@link Extrapolate#SYMMETRY} a stand-in for an unseen symmetry class also needs the
+     * query's mass and joins to occur together somewhere under the node, so the fold never crosses mass or joins.
      */
-    public List<Invariant> invariants() { return invariants; }
+    private static boolean standsIn(Node node, Descriptor d, Extrapolate extrapolate) {
+        if (node.parent == null || !node.pure() || node.counts[0] + node.counts[1] == 0) return false;
+        if (!extrapolate.allows(node.splitOn.level())) return false;
+        return node.splitOn.level() != Level.SYMMETRY || extrapolate == Extrapolate.EVERYTHING || invariantsUnder(node, d.mass(), d.joins());
+    }
+
+    private static boolean invariantsUnder(Node n, int mass, int joins) {
+        if (n.edge != null && n.edge.level() == Level.JOINS && n.value == joins
+                && n.parent.edge != null && n.parent.edge.level() == Level.MASS && n.parent.value == mass) return true;
+        for (final var c : n.children.values()) if (invariantsUnder(c, mass, joins)) return true;
+        return false;
+    }
+
+    /** The binary score: 1 for POSITIVE or an ASSUMED 1 under the default setting, else 0. */
+    public int score(int[] grid) {
+        final var a = read(grid);
+        return (a.verdict() == Verdict.POSITIVE || (a.verdict() == Verdict.ASSUMED && a.label() == 1)) ? 1 : 0;
+    }
+
+    /** At a leaf: a grid seen there answers with its own majority; any other grid with the leaf's. */
+    private static int resolve(Node leaf, int[] grid) {
+        final var own = new long[2];
+        for (final var m : leaf.members) if (Arrays.equals(m.grid(), grid)) own[m.label()]++;
+        if (own[0] + own[1] == 0 || own[0] == own[1]) return leaf.answer();
+        return own[1] > own[0] ? 1 : 0;
+    }
+
+    private Context context(Node node) {
+        final var steps = new ArrayList<Context.Step>();
+        var root = node;
+        for (var n = node; n.parent != null; n = n.parent) { steps.add(0, step(n)); root = n.parent; }
+        if (node.parent == null) root = node;
+        final var boundary = node.parent != null && !node.parent.pure();
+        return new Context(root == d6 ? Root.D6 : Root.D4, List.copyOf(steps), node.counts[0], node.counts[1],
+                node.answer(), node.depth, boundary);
+    }
+
+    private static Context.Step step(Node n) {
+        final var c = n.edge;
+        final var v = n.value;
+        return switch (c.level()) {
+            case BOX -> new Context.Step(Level.BOX, "box", v, n.kind == Kind.EMPTY ? "empty"
+                    : n.kind == Kind.HEX ? "hex " + (v % 4096) : (v / 4096) + "x" + (v % 4096));
+            case SYMMETRY -> new Context.Step(Level.SYMMETRY, Groups.walkFor(n.kind).get(c.index()).name(), v, v == 1 ? "yes" : "no");
+            case MASS -> new Context.Step(Level.MASS, "mass", v, Long.toString(v));
+            case JOINS -> new Context.Step(Level.JOINS, "joins", v, Long.toString(v));
+            case EXTENSION -> new Context.Step(Level.EXTENSION, c.primitive().name(), v, Long.toString(v));
+            case ORIENTATION -> new Context.Step(Level.ORIENTATION, n.kind == Kind.HEX ? "shift" : "turned", v,
+                    n.kind == Kind.HEX ? (v == 0 ? "right" : "left") : (v == 1 ? "yes" : "no"));
+            case POSE -> new Context.Step(Level.POSE, "pose", v, Long.toString(v));
+            case POSITION -> new Context.Step(Level.POSITION, "corner", v, "(" + (v / 4096) + "," + (v % 4096) + ")");
+        };
+    }
+
+    // ---- slices and generation ----------------------------------------------------------------------
+
+    /** Where a grid's path ends: the node it reached, and whether it broke off there (a missing child). */
+    private record Stop(Node node, boolean missing) { }
+
+    private Stop stop(int[] grid) {
+        final var d = describe(grid);
+        var node = rootOf(d.root());
+        while (node.splitOn != null) {
+            final var child = node.children.get(value(node.splitOn, d));
+            if (child == null) return new Stop(node, true);
+            node = child;
+        }
+        return new Stop(node, false);
+    }
+
+    private record Pending(int[] grid, Context context) { }
+
+    /** Largest number of whole-orbit fills (or subsets) a single node may enumerate. */
+    static final long GENERATION_LIMIT = 1L << 21;
+
+    /**
+     * Walk the slice's root(s) under its constraints. Trained grids are delivered as they are found
+     * (CONFIRMED); grids assumed by a pure node within the setting are generated, then delivered deepest node
+     * first and, at equal depth, nodes next to disagreement first (ASSUMED).
+     *
+     * <p>With {@link Slice.Per#POSE} or {@link Slice.Per#SHAPE} the matching grids are folded into one entry
+     * per distinct pose or shape. The entry is a trained grid if the group has one (CONFIRMED), and among
+     * those the one nearest the canonical pose and the frame's top-left: not turned, lowest pose code, lowest
+     * corner. So a shape trained in its canonical pose is shown in it.
+     */
+    public Slice.Result slice(Slice q, Slice.Callback callback) {
+        if (q.per == Slice.Per.PLACEMENT) return placements(q, callback);
+
+        // Folding by pose or by shape: gather every matching grid, then keep one per group.
+        record Found(int[] grid, Context context, Slice.Evidence evidence, Descriptor d) { }
+        final var found = new ArrayList<Found>();
+        final var all = placements(q, (g, c, e) -> found.add(new Found(g, c, e, describe(g))));
+        final Comparator<Found> preferred = Comparator
+                .comparing((Found f) -> f.evidence() != Slice.Evidence.CONFIRMED)   // a trained grid first
+                .thenComparingInt(f -> Math.max(0, f.d().orientation()))
+                .thenComparingInt(f -> f.d().pose())
+                .thenComparingInt(f -> f.d().cornerRow())
+                .thenComparingInt(f -> f.d().cornerCol());
+        final var groups = new LinkedHashMap<List<Object>, Found>();
+        for (final var f : found) {
+            final List<Object> key = q.per == Slice.Per.SHAPE
+                    ? List.of(f.d().root(), f.d().canonical())
+                    : List.of(f.d().root(), f.d().canonical(), f.d().orientation(), f.d().pose());
+            groups.merge(key, f, (a, b) -> preferred.compare(a, b) <= 0 ? a : b);
+        }
+        var confirmed = 0;
+        for (final var f : groups.values()) {
+            if (f.evidence() == Slice.Evidence.CONFIRMED) confirmed++;
+            callback.accept(f.grid(), f.context(), f.evidence());
+        }
+        return new Slice.Result(confirmed, groups.size() - confirmed, all.skipped());
+    }
+
+    /** Every matching grid, one entry per placement. */
+    private Slice.Result placements(Slice q, Slice.Callback callback) {
+        final var roots = q.root == Root.BOTH ? List.of(d4, d6) : List.of(rootOf(q.root));
+        final var seen = new HashSet<String>();
+        final var pending = new ArrayList<Pending>();
+        final var tally = new int[3];                          // confirmed, assumed, skipped
+        for (final var root : roots) walk(root, q, callback, seen, pending, tally);
+        pending.sort(Comparator.comparingInt((Pending p) -> -p.context().depth())
+                .thenComparing(p -> !p.context().boundary()));
+        for (final var p : pending) callback.accept(p.grid(), p.context(), Slice.Evidence.ASSUMED);
+        return new Slice.Result(tally[0], pending.size(), tally[2]);
+    }
+
+    private void walk(Node node, Slice q, Slice.Callback cb, Set<String> seen, List<Pending> pending, int[] tally) {
+        if (node.splitOn == null) {
+            final var ctx = context(node);
+            final var done = new HashSet<String>();
+            for (final var m : node.members) {
+                final var key = Arrays.toString(m.grid());
+                if (!done.add(key)) continue;
+                final var label = resolve(node, m.grid());
+                if (q.label != null && q.label != label) continue;
+                seen.add(key);
+                tally[0]++;
+                cb.accept(m.grid().clone(), ctx, Slice.Evidence.CONFIRMED);
+            }
+            return;
+        }
+        for (final var e : node.children.entrySet())
+            if (passes(node, e.getKey(), e.getValue(), q)) walk(e.getValue(), q, cb, seen, pending, tally);
+        if (node.parent != null && node.pure() && node.counts[0] + node.counts[1] > 0
+                && q.extrapolate.allows(node.splitOn.level()) && (q.label == null || q.label == node.answer()))
+            generate(node, q, seen, pending, tally);
+    }
+
+    private static boolean passes(Node node, long v, Node child, Slice q) {
+        return switch (node.splitOn.level()) {
+            case BOX -> {
+                if (q.boxShort != null && (v / 4096 != q.boxShort || v % 4096 != q.boxLong)) yield false;
+                if (child.kind == Kind.EMPTY) yield q.required.isEmpty() && q.massMin == 0;
+                final var names = Groups.walkFor(child.kind).stream().map(CellSet.Map::name).toList();
+                yield names.containsAll(q.required);
+            }
+            case SYMMETRY -> {
+                final var name = Groups.walkFor(node.kind).get(node.splitOn.index()).name();
+                if (q.required.contains(name)) yield v == 1;
+                yield !q.exact || v == 0;
+            }
+            case MASS -> v >= q.massMin && v <= q.massMax;
+            case JOINS -> v >= q.joinsMin && v <= q.joinsMax;
+            case ORIENTATION -> q.orientation == null || v == q.orientation;
+            case POSE -> q.pose == null || v == q.pose;
+            case POSITION -> q.cornerRow == null || v == q.cornerRow * 4096L + q.cornerCol;
+            case EXTENSION -> true;
+        };
+    }
+
+    /** Generate the grids a pure node would answer for but never saw, keeping those the slice admits. */
+    private void generate(Node node, Slice q, Set<String> seen, List<Pending> pending, int[] tally) {
+        final var level = node.splitOn.level();
+        final Set<CellSet> crops = switch (level) {
+            case ORIENTATION, POSE, POSITION -> memberCrops(node);
+            default -> shapes(node, q, tally);
+        };
+        final var ctx = context(node);
+        for (final var crop : crops)
+            for (final var t : Groups.D4) {
+                final var posed = crop.map(t);
+                for (var r = 0; r + posed.extentA <= inRows; r++)
+                    for (var c = 0; c + posed.extentB <= inCols; c++) {
+                        final var g = place(posed, r, c);
+                        final var key = Arrays.toString(g);
+                        if (seen.contains(key)) continue;
+                        final var s = stop(g);
+                        if (s.node() != node || !s.missing()) continue;
+                        final var d = describe(g);
+                        if (!standsIn(node, d, q.extrapolate) || !q.admits(d)) continue;
+                        seen.add(key);
+                        pending.add(new Pending(g, ctx));
+                    }
+            }
+    }
+
+    /** The input-frame crop of one member per distinct shape under {@code node}. */
+    private Set<CellSet> memberCrops(Node node) {
+        final var reps = new LinkedHashMap<CellSet, Member>();
+        for (final var m : membersUnder(node)) reps.putIfAbsent(m.descriptor().canonical(), m);
+        final var out = new LinkedHashSet<CellSet>();
+        for (final var m : reps.values()) out.add(cropOf(m.grid()));
+        return out;
+    }
+
+    /**
+     * Shapes in this node's box with at least the symmetries already answered yes on the path. On the square
+     * lattice they are built from whole orbits of those symmetries (one choice per orbit); on the hex root the
+     * candidates are the subsets of the square input box, which the descriptor then files.
+     */
+    private Set<CellSet> shapes(Node node, Slice q, int[] tally) {
+        Node box = node;
+        while (box.edge == null || box.edge.level() != Level.BOX) box = box.parent;
+        final var kind = box.kind;
+        if (kind == Kind.EMPTY) return Set.of();
+        final int h = (int) (box.value / 4096), w = (int) (box.value % 4096);
+        final var yes = new ArrayList<Integer>();
+        for (var n = node; n != box.parent; n = n.parent)
+            if (n.edge != null && n.edge.level() == Level.SYMMETRY && n.value == 1) yes.add(n.edge.index());
+
+        if (kind == Kind.HEX) return hexCandidates(h, q, tally);
+
+        final var maps = new ArrayList<int[]>();                      // each: a permutation of the h×w cells
+        for (final var i : yes) maps.add(boxPermutation(kind, i, h, w));
+        final var orbit = orbits(h * w, maps);
+        final var groups = Arrays.stream(orbit).distinct().count();
+        if ((1L << Math.min(groups, 62)) > GENERATION_LIMIT) { tally[2]++; return Set.of(); }
+        final var members = new HashMap<Integer, List<Integer>>();
+        for (var i = 0; i < orbit.length; i++) members.computeIfAbsent(orbit[i], k -> new ArrayList<>()).add(i);
+        final var list = new ArrayList<>(members.values());
+        final var out = new LinkedHashSet<CellSet>();
+        for (long mask = 1; mask < (1L << list.size()); mask++) {
+            final var fill = new int[h * w];
+            var mass = 0;
+            for (var k = 0; k < list.size(); k++)
+                if ((mask & (1L << k)) != 0) for (final var cell : list.get(k)) { fill[cell] = 1; mass++; }
+            if (mass < q.massMin || mass > q.massMax || !tight(fill, h, w)) continue;
+            out.add(cropOfFill(fill, w));
+        }
+        return out;
+    }
+
+    private Set<CellSet> hexCandidates(int s, Slice q, int[] tally) {
+        final var cells = s * s;
+        if (cells >= 62 || (1L << cells) > GENERATION_LIMIT) { tally[2]++; return Set.of(); }
+        final var out = new LinkedHashSet<CellSet>();
+        for (long mask = 1; mask < (1L << cells); mask++) {
+            final var mass = Long.bitCount(mask);
+            if (mass < q.massMin || mass > q.massMax) continue;
+            final var fill = new int[cells];
+            for (var i = 0; i < cells; i++) if ((mask & (1L << i)) != 0) fill[i] = 1;
+            if (!tight(fill, s, s)) continue;
+            out.add(cropOfFill(fill, s));
+        }
+        return out;
+    }
+
+    private static CellSet cropOfFill(int[] fill, int w) {
+        final var as = new ArrayList<Integer>();
+        final var bs = new ArrayList<Integer>();
+        for (var i = 0; i < fill.length; i++) if (fill[i] == 1) { as.add(i / w); bs.add(i % w); }
+        return CellSet.of(as.stream().mapToInt(Integer::intValue).toArray(), bs.stream().mapToInt(Integer::intValue).toArray());
+    }
+
+    /** The permutation of an {@code h×w} box's cells (row-major) that walk symmetry {@code i} performs. */
+    private static int[] boxPermutation(Kind kind, int i, int h, int w) {
+        final var p = new int[h * w];
+        for (var a = 0; a < h; a++)
+            for (var b = 0; b < w; b++) {
+                final int[] to = switch (kind) {
+                    case RECT -> switch (i) {
+                        case 0 -> new int[]{h - 1 - a, w - 1 - b};      // rot180
+                        case 1 -> new int[]{a, w - 1 - b};              // short-axis mirror
+                        default -> new int[]{h - 1 - a, b};             // long-axis mirror
+                    };
+                    default -> switch (i) {                             // square box, s = h = w
+                        case 0 -> new int[]{b, h - 1 - a};              // rot90
+                        case 1 -> new int[]{h - 1 - a, h - 1 - b};      // rot180
+                        case 2 -> new int[]{h - 1 - a, b};              // mirrorH
+                        case 3 -> new int[]{a, h - 1 - b};              // mirrorV
+                        case 4 -> new int[]{b, a};                      // diagMain
+                        default -> new int[]{h - 1 - b, h - 1 - a};     // diagAnti
+                    };
+                };
+                p[a * w + b] = to[0] * w + to[1];
+            }
+        return p;
+    }
+
+    /** Orbit label per cell under the group generated by {@code maps} (union-find). */
+    private static int[] orbits(int n, List<int[]> maps) {
+        final var parent = new int[n];
+        for (var i = 0; i < n; i++) parent[i] = i;
+        for (final var m : maps)
+            for (var i = 0; i < n; i++) {
+                final int a = find(parent, i), b = find(parent, m[i]);
+                if (a != b) parent[a] = b;
+            }
+        final var out = new int[n];
+        for (var i = 0; i < n; i++) out[i] = find(parent, i);
+        return out;
+    }
+
+    private static int find(int[] p, int i) { while (p[i] != i) { p[i] = p[p[i]]; i = p[i]; } return i; }
+
+    private static boolean tight(int[] fill, int h, int w) {
+        boolean top = false, bottom = false, left = false, right = false;
+        for (var a = 0; a < h; a++)
+            for (var b = 0; b < w; b++)
+                if (fill[a * w + b] == 1) {
+                    if (a == 0) top = true;
+                    if (a == h - 1) bottom = true;
+                    if (b == 0) left = true;
+                    if (b == w - 1) right = true;
+                }
+        return top && bottom && left && right;
+    }
+
+    private int[] place(CellSet s, int row, int col) {
+        final var g = new int[inRows * inCols];
+        for (var i = 0; i < s.size(); i++) g[(row + s.a(i)) * inCols + col + s.b(i)] = 1;
+        return g;
+    }
+
+    private CellSet cropOf(int[] grid) {
+        final var as = new ArrayList<Integer>();
+        final var bs = new ArrayList<Integer>();
+        for (var i = 0; i < grid.length; i++) if (grid[i] == 1) { as.add(i / inCols); bs.add(i % inCols); }
+        return CellSet.of(as.stream().mapToInt(Integer::intValue).toArray(), bs.stream().mapToInt(Integer::intValue).toArray());
+    }
+
+    // ---- inspection ---------------------------------------------------------------------------------
+
+    /** Both tries drawn as indented paths, each node with its counts and leaves marked. */
+    public String render() {
+        final var sb = new StringBuilder();
+        for (final var root : List.of(d4, d6)) {
+            sb.append(root == d4 ? "D4 root" : "D6 root")
+              .append(String.format("  [neg %d, pos %d]%n", root.counts[0], root.counts[1]));
+            for (final var c : root.children.values()) draw(c, "  ", sb);
+        }
+        return sb.toString();
+    }
+
+    private static void draw(Node n, String indent, StringBuilder sb) {
+        sb.append(indent).append(step(n)).append(String.format("  [neg %d, pos %d]%s%n",
+                n.counts[0], n.counts[1], n.splitOn == null ? "  leaf" : ""));
+        for (final var c : n.children.values()) draw(c, indent + "  ", sb);
+    }
+
+    /** Nodes in both tries (roots included). */
+    public int size() { return count(d4) + count(d6); }
+
+    private static int count(Node n) {
+        var k = 1;
+        for (final var c : n.children.values()) k += count(c);
+        return k;
+    }
+
+    /** The extension primitives currently inserted anywhere, by name. */
+    public Set<String> extensions() {
+        final var out = new LinkedHashSet<String>();
+        for (final var root : List.of(d4, d6)) extensionsUnder(root, out);
+        return out;
+    }
+
+    private static void extensionsUnder(Node n, Set<String> out) {
+        if (n.splitOn != null && n.splitOn.level() == Level.EXTENSION) out.add(n.splitOn.primitive().name());
+        for (final var c : n.children.values()) extensionsUnder(c, out);
+    }
 }

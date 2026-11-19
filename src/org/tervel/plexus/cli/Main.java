@@ -1,29 +1,12 @@
 package org.tervel.plexus.cli;
 
+import org.tervel.plexus.Descriptor;
+import org.tervel.plexus.Extrapolate;
+import org.tervel.plexus.Lattice;
 import org.tervel.plexus.Plexus;
-
-import org.tervel.plexus.diagnostics.ChainCritic;
-import org.tervel.plexus.diagnostics.CollisionDiagnostic;
-import org.tervel.plexus.invariants.Connectivity;
-import org.tervel.plexus.invariants.Invariant;
-import org.tervel.plexus.invariants.Mass;
-import org.tervel.plexus.invariants.Signature;
-import org.tervel.plexus.residual.ExactExceptions;
-import org.tervel.plexus.residual.ResidualResolver;
-import org.tervel.plexus.ops.Decompose;
-import org.tervel.plexus.ops.Scale;
-import org.tervel.plexus.reports.GridQuery;
-import org.tervel.plexus.reports.PossibilityReport;
-import org.tervel.plexus.reports.PrimeReport;
-import org.tervel.plexus.reports.ScoreReport;
-import org.tervel.plexus.reports.SliceReport;
-import org.tervel.plexus.reports.StabilizerQuery;
-import org.tervel.plexus.reports.SymmetrySlice;
-import org.tervel.plexus.reports.TopologyReport;
-import org.tervel.plexus.reports.TrieReport;
-import org.tervel.plexus.reports.VolumeReport;
-import org.tervel.plexus.symmetry.Dihedral;
-import org.tervel.plexus.symmetry.SymmetryGroup;
+import org.tervel.plexus.Root;
+import org.tervel.plexus.Slice;
+import org.tervel.plexus.Verdict;
 
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
@@ -33,321 +16,256 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Scanner;
-import java.util.stream.IntStream;
 
-public class Main {
+/**
+ * The interpreter: train a {@link Plexus} on a data file, then query it.
+ *
+ * <pre>
+ *   [5] score     how many training grids read back with their own label
+ *   [t] trie      both tries (D4, D6), drawn as paths with counts
+ *   [4] grid      a typed grid's descriptor, and its verdict under every setting
+ *   [s] slice     walk a slice and print what it produces
+ *   [8] diagnose  the mixed junctions and leaves, and what resolves each
+ *   [q] quit
+ * </pre>
+ *
+ * <p>A data file starts with an {@code nxm} line, then records of {@code n} grid rows ({@code x} filled, anything
+ * else empty) each followed by a {@code 0} or {@code 1} label. Only {@code n} is read from the first line; the
+ * column count is the first record's cell count divided by {@code n}.
+ *
+ * <p>{@code --lattice} picks the router's lattices, comma separated: {@code square4}, {@code square8},
+ * {@code hex6} (default {@code square4,hex6}). Exactly one square lattice; hex is optional.
+ */
+public final class Main {
 
-    /** One labelled example, kept together — no splitting the dataset by class. */
+    /** One labelled example. */
     public record Example(int[] grid, int label) { }
 
     public static void main(String[] args) throws IOException {
-        useUtf8Console();
-        if (args.length < 1) {
-            System.err.println("usage: Main <data-file>");
+        System.setOut(new PrintStream(new FileOutputStream(FileDescriptor.out), true, StandardCharsets.UTF_8));
+        String file = null;
+        var lattices = Lattice.DEFAULT;
+        try {
+            for (var i = 0; i < args.length; i++) {
+                if (args[i].equals("--lattice") && i + 1 < args.length) lattices = lattices(args[++i]);
+                else if (args[i].startsWith("--lattice=")) lattices = lattices(args[i].substring("--lattice=".length()));
+                else if (file == null && !args[i].startsWith("--")) file = args[i];
+                else throw new IllegalArgumentException("unexpected argument: " + args[i]);
+            }
+        } catch (IllegalArgumentException e) {
+            System.err.println(e.getMessage());
+            file = null;
+        }
+        if (file == null) {
+            System.err.println("usage: Main <data-file> [--lattice square4,hex6 | square8 | square8,hex6 | square4]");
             return;
         }
-        final var data = parse(Path.of(args[0]));
-        // Domain frame from the data's "nxm" header. A square domain (rows == cols) routes under the full
-        // square group D4; a rectangular domain breaks the transpose and routes under D2 (§11, "the
-        // rectangle"; org.tervel.plexus.symmetry.Crystallographic — order 2 still covers the plane).
-        final var rows = data.isEmpty() ? 0 : Integer.parseInt(Files.readAllLines(Path.of(args[0])).get(0).split("x")[0].trim());
+        final var path = Path.of(file);
+        final var rows = Integer.parseInt(Files.readAllLines(path).get(0).split("x")[0].trim());
+        final var data = parse(path);
         final var cols = data.isEmpty() ? 0 : data.get(0).grid().length / Math.max(1, rows);
-        final var square = rows == cols;
-        final var group = square ? Dihedral.d4() : Dihedral.d2();
-        // Compose mass (V) and connectivity (E) into one Signature column: both are group-invariant (every
-        // rigid transform preserves cell and adjacency counts), so each is a legal symmetry coordinate —
-        // but blind alone, so they're packed together. Connectivity carries the frame so adjacency uses the
-        // true row stride; the Signature packing base just needs to exceed the max edge count, which
-        // width(rows + cols) does for any rectangle. Opt-in axes (held out by minimality, §3): add
-        // new Position() (radial-only) for dot cases, or new MaxDegree() to separate a path from a fork.
-        final var connectivity = square ? new Connectivity() : new Connectivity(rows, cols);
-        final var invariants = List.<Invariant>of(new Signature(new Mass(), connectivity, square ? rows : rows + cols));
-        // The residual policy past the twin floor (§10.4): the deterministic exact-exception store. Swap in a
-        // brute-force or learned ResidualResolver here to predict unseen twins instead of memorising them.
-        final var resolver = new ExactExceptions();
-
-        final var plexus = train(group, invariants, resolver, data, rows, cols);
-        final var inputs = data.stream().map(Example::grid).toList();
-        final var labels = data.stream().map(Example::label).toList();
-
-        // Training post-pass: surface any separable collision as a blueprint for the next invariant.
-        System.out.println(new CollisionDiagnostic(inputs, labels).apply(plexus));
-
-        repl(plexus, inputs, labels);
+        final var plexus = new Plexus(rows, cols, lattices, true);
+        plexus.fit(data.stream().map(Example::grid).toList(), data.stream().map(Example::label).toList());
+        System.out.printf("plexus: %d example(s) in a %dx%d frame, lattices %s, %d node(s), extensions %s%n",
+                data.size(), rows, cols, plexus.lattices().stream().sorted().toList(), plexus.size(), plexus.extensions().isEmpty() ? "none" : plexus.extensions());
+        repl(plexus, data, rows, cols);
     }
 
-    /**
-     * Print in UTF-8 regardless of the platform's default console encoding. The reports are full of the
-     * notation the design uses — {@code §}, {@code Δ}, {@code ⊇}, arrows, em-dashes — and on a Windows
-     * console defaulting to a legacy codepage every one of them renders as {@code ?}. Fixing it here rather
-     * than telling the reader to run {@code chcp 65001} keeps the burden on the program, which is the side
-     * that knows what it is about to print.
-     */
-    private static void useUtf8Console() {
-        System.setOut(new PrintStream(new FileOutputStream(FileDescriptor.out), true, StandardCharsets.UTF_8));
-        System.setErr(new PrintStream(new FileOutputStream(FileDescriptor.err), true, StandardCharsets.UTF_8));
+    /** Parse a {@code --lattice} value such as {@code square8,hex6}. */
+    static java.util.Set<Lattice> lattices(String spec) {
+        final var out = EnumSet.noneOf(Lattice.class);
+        for (final var part : spec.split(",")) {
+            final var t = part.trim().toLowerCase(Locale.ROOT);
+            out.add(switch (t) {
+                case "square4" -> Lattice.SQUARE_4;
+                case "square8" -> Lattice.SQUARE_8;
+                case "hex6", "hex" -> Lattice.HEX_6;
+                default -> throw new IllegalArgumentException("unknown lattice: " + t + " (square4, square8, hex6)");
+            });
+        }
+        return Lattice.checked(out);
     }
 
-    /** Trains a Plexus on the dataset (square domain — frame inferred per grid). */
-    static Plexus train(SymmetryGroup group, List<Invariant> invariants, ResidualResolver resolver, List<Example> data) {
-        return train(group, invariants, resolver, data, -1, -1);
-    }
-
-    /**
-     * Trains a Plexus on the dataset under the given group, chain, resolver, and explicit {@code rows×cols}
-     * domain frame ({@code rows, cols <= 0} = infer a square frame per grid).
-     */
-    static Plexus train(SymmetryGroup group, List<Invariant> invariants, ResidualResolver resolver,
-                        List<Example> data, int rows, int cols) {
-        final var plexus = new Plexus(group, invariants, resolver, rows, cols);
-        plexus.fit(data.stream().map(Example::grid).toList(),
-                   data.stream().map(Example::label).toList());
-        return plexus;
-    }
-
-    /** Interactive interpreter: query a node by one of the three coordinate kinds, then the whole-table reports. */
-    static void repl(Plexus plexus, List<int[]> inputs, List<Integer> labels) {
+    static void repl(Plexus plexus, List<Example> data, int rows, int cols) {
         final var in = new Scanner(System.in);
-        final var side = inputs.isEmpty() ? 0 : (int) Math.round(Math.sqrt(inputs.get(0).length));
         while (true) {
-            System.out.println("""
-
-                    Menu  -  the descriptor read both directions (classify/generate), at two scopes:
-
-                                   a node                                  the whole table
-                      resolve  ->  [1] stabilizer  [4] grid                [5] score
-                      generate <-  [2] invariant   [3] label  [b] symmetry  [9] atoms  [s] scale  [p] prime    [6] topology  [t] trie  [7] possibility  [v] volume  [8] diagnose  [c] critic
-                      [q] quit""");
+            System.out.println("\n[5] score  [t] trie  [4] grid  [s] slice  [8] diagnose  [q] quit");
             System.out.print("> ");
             if (!in.hasNextLine()) return;
-            final var cmd = in.nextLine().trim().toLowerCase();
-            switch (cmd) {
-                case "1" -> queryStabilizer(plexus, in, side, inputs, labels);
-                case "2" -> queryInvariant(plexus, in);
-                case "3" -> queryLabel(plexus, in);
-                case "4" -> queryGrid(plexus, in, side);
-                case "5" -> System.out.println(new ScoreReport(inputs, labels).apply(plexus));
-                case "6" -> System.out.println(new TopologyReport().apply(plexus));
-                case "t" -> System.out.println(TrieReport.census(plexus.store()));
-                case "7" -> System.out.println(new PossibilityReport(inputs).apply(plexus));
-                case "v" -> System.out.println(new VolumeReport(side).apply(plexus));
-                case "8" -> System.out.println(new CollisionDiagnostic(inputs, labels).apply(plexus));
-                case "c" -> System.out.println(new ChainCritic(inputs, labels).apply(plexus));
-                case "b" -> querySymmetrySlice(plexus, in, side);
-                case "9" -> queryDecompose(plexus, in, side);
-                case "s" -> queryScale(plexus, in, side);
-                case "p" -> System.out.println(new PrimeReport(side).apply(plexus));
-                case "q", "quit", "exit" -> { return; }
-                case "" -> { }
-                default -> System.out.println("unknown command: " + cmd);
-            }
-        }
-    }
-
-    /**
-     * [1] Query by stabilizer. Type allowed symmetries to query under an explicit stabilizer (posed mode);
-     * leave them blank and give a label to <em>solve</em> the stabilizer from that label (gather = expand to
-     * maximal recall, separate = shrink to the shape's own); leave both blank for the shape's own stabilizer.
-     */
-    static void queryStabilizer(Plexus plexus, Scanner in, int side, List<int[]> grids, List<Integer> labels) {
-        try {
-            System.out.print("canonical shape (e.g. xxx/.x.):  ");
-            final var grid = parseGrid(in.nextLine(), side);
-            System.out.print("allowed symmetries (e.g. mirrorV; blank = solve from a label):  ");
-            final var line = in.nextLine().trim();
-            if (!line.isEmpty()) {
-                // Posed mode asks for an EXACT stabilizer, and a stabilizer is a subgroup. A non-closed
-                // request is impossible for any shape, not merely unachieved by this one — say which.
-                final var mask = maskOf(plexus.group(), line);
-                if (!plexus.group().isSubgroup(mask)) {
-                    final var missing = plexus.group().closure(mask) & ~mask;
-                    System.out.println("\nimpossible stabilizer: [" + plexus.group().describe(mask)
-                            + "] is not closed — it forces [" + plexus.group().describe(missing)
-                            + "], which you did not list. No shape has exactly that stabilizer.");
-                    return;
+            final var cmd = in.nextLine().trim().toLowerCase(Locale.ROOT);
+            try {
+                switch (cmd) {
+                    case "5" -> score(plexus, data);
+                    case "t" -> System.out.print(plexus.render());
+                    case "4" -> {
+                        System.out.print("grid (e.g. xxx/.x.):  ");
+                        grid(plexus, parseGrid(in.nextLine(), rows, cols), rows, cols);
+                    }
+                    case "s" -> slice(plexus, in, rows, cols);
+                    case "8" -> System.out.print(plexus.diagnose());
+                    case "q", "quit", "exit" -> { return; }
+                    case "" -> { }
+                    default -> System.out.println("unknown command: " + cmd);
                 }
-                System.out.println("\n" + new StabilizerQuery(grid, mask).apply(plexus));
-                return;
+            } catch (RuntimeException e) {
+                System.out.println("bad query: " + e.getMessage());
             }
-            System.out.print("label to solve for (1/0; blank = the shape's own stabilizer):  ");
-            final var labelLine = in.nextLine().trim();
-            if (labelLine.isEmpty()) {
-                System.out.println("\n" + new StabilizerQuery(grid, selfStabilizer(plexus, grid)).apply(plexus));
-                return;
+        }
+    }
+
+    private static void score(Plexus plexus, List<Example> data) {
+        var right = 0;
+        for (final var e : data) if (plexus.read(e.grid()).label() == e.label()) right++;
+        System.out.printf("read back %d/%d training grid(s) with their own label%n", right, data.size());
+    }
+
+    private static void grid(Plexus plexus, int[] g, int rows, int cols) {
+        render(g, rows, cols, "    ");
+        final Descriptor d = plexus.describe(g);
+        System.out.printf("  %s on %s, box %dx%d, symmetries %s, mass %d, joins %d, orientation %d, pose %d, corner (%d,%d)%n",
+                d.kind(), d.root(), d.boxShort(), d.boxLong(), d.symmetries(), d.mass(), d.joins(),
+                d.orientation(), d.pose(), d.cornerRow(), d.cornerCol());
+        for (final var extrapolate : Extrapolate.values()) {
+            final var a = plexus.read(g, extrapolate);
+            System.out.printf("  %-10s %-8s%s   %s%n", extrapolate, a.verdict(),
+                    a.verdict() == Verdict.UNSEEN ? "" : " label " + a.label(), a.context());
+        }
+    }
+
+    private static void slice(Plexus plexus, Scanner in, int rows, int cols) {
+        System.out.print("root (d4 / d6 / both; blank = both):  ");
+        final var r = in.nextLine().trim().toLowerCase(Locale.ROOT);
+        if (!blank(r) && !r.equals("d4") && !r.equals("d6"))
+            throw new IllegalArgumentException("root must be d4, d6 or both, not \"" + r + "\"");
+        final var q = Slice.on(r.equals("d4") ? Root.D4 : r.equals("d6") ? Root.D6 : Root.BOTH);
+        System.out.print("at least these symmetries (comma-separated, e.g. rot180, short-axis mirror; blank = none):  ");
+        final var sym = in.nextLine().trim();
+        if (!blank(sym)) q.atLeast(sym.split("\\s*,\\s*"));
+        System.out.print("mass (a number or a range like 4-5; blank = any):  ");
+        final var m = range(in.nextLine(), "mass");
+        if (m != null) q.mass(m[0], m[1]);
+        System.out.print("joins (a number or a range like 3-4; blank = any):  ");
+        final var j = range(in.nextLine(), "joins");
+        if (j != null) q.joins(j[0], j[1]);
+        System.out.print("label (1 / 0; blank = both):  ");
+        final var l = in.nextLine().trim();
+        if (!blank(l)) {
+            if (!l.equals("0") && !l.equals("1")) throw new IllegalArgumentException("label must be 1 or 0, not \"" + l + "\"");
+            q.label(Integer.parseInt(l));
+        }
+        System.out.print("orientation (0 / 1, or upright / turned on a rectangle, right / left on hex; blank = any):  ");
+        final var o = in.nextLine().trim().toLowerCase(Locale.ROOT);
+        if (!blank(o)) {
+            if (o.equals("0") || o.equals("upright") || o.equals("right")) q.orientation(0);
+            else if (o.equals("1") || o.equals("turned") || o.equals("left")) q.orientation(1);
+            else throw new IllegalArgumentException("orientation must be 0 or 1 (upright / turned, right / left), not \"" + o + "\"");
+        }
+        System.out.print("pose (a number, 0 = the canonical pose; blank = any):  ");
+        final var po = in.nextLine().trim();
+        if (!blank(po)) {
+            try { q.pose(Integer.parseInt(po)); }
+            catch (NumberFormatException e) { throw new IllegalArgumentException("pose must be a number, not \"" + po + "\""); }
+        }
+        System.out.print("corner (row,col of the box's top-left; blank = any):  ");
+        final var co = in.nextLine().trim();
+        if (!blank(co)) {
+            final var rc = co.split("\\s*,\\s*");
+            try {
+                if (rc.length != 2) throw new NumberFormatException();
+                q.corner(Integer.parseInt(rc[0]), Integer.parseInt(rc[1]));
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("corner must be row,col like 0,1, not \"" + co + "\"");
             }
-            System.out.print("direction (gather = expand / separate = shrink; blank = gather):  ");
-            final var gather = !in.nextLine().trim().toLowerCase().startsWith("s");
-            System.out.println("\n" + new StabilizerQuery(grid, Integer.parseInt(labelLine), gather, grids, labels).apply(plexus));
-        } catch (RuntimeException e) {
-            System.out.println("bad query: " + e.getMessage());
+        }
+        System.out.print("show one entry per (placement / pose / shape; blank = placement):  ");
+        final var per = in.nextLine().trim().toLowerCase(Locale.ROOT);
+        if (per.isEmpty() || per.startsWith("pl")) q.per(Slice.Per.PLACEMENT);
+        else if (per.startsWith("po")) q.per(Slice.Per.POSE);
+        else if (per.startsWith("s")) q.per(Slice.Per.SHAPE);
+        else throw new IllegalArgumentException("show must be placement, pose or shape, not \"" + per + "\"");
+        final var unit = per.startsWith("po") ? " pose(s)" : per.startsWith("s") ? " shape(s)" : "";
+        System.out.print("extrapolate (none / placement / symmetry / everything; blank = symmetry):  ");
+        final var ex = in.nextLine().trim().toLowerCase(Locale.ROOT);
+        if (ex.isEmpty() || ex.startsWith("s")) q.extrapolate(Extrapolate.SYMMETRY);
+        else if (ex.startsWith("n")) q.extrapolate(Extrapolate.NONE);
+        else if (ex.startsWith("p")) q.extrapolate(Extrapolate.PLACEMENT);
+        else if (ex.startsWith("e")) q.extrapolate(Extrapolate.EVERYTHING);
+        else throw new IllegalArgumentException("extrapolate must be none, placement, symmetry or everything, not \"" + ex + "\"");
+        final var result = plexus.slice(q, (g, context, evidence) -> {
+            System.out.println(evidence + "  label " + context.answer() + "  " + context);
+            render(g, rows, cols, "    ");
+        });
+        System.out.printf("%d confirmed%s, %d assumed%s%n", result.confirmed(), unit, result.assumed(),
+                result.skipped() > 0 ? ", " + result.skipped() + " node(s) too large to generate" : "");
+    }
+
+    /** Whether an answer means "no constraint": empty, or one of the words any, all, both, none. */
+    private static boolean blank(String s) {
+        final var t = s.trim().toLowerCase(Locale.ROOT);
+        return t.isEmpty() || t.equals("any") || t.equals("all") || t.equals("both") || t.equals("none");
+    }
+
+    /** A typed number ({@code 5}) or range ({@code 4-5}) as {@code {min, max}}; null for no constraint. */
+    static int[] range(String typed, String what) {
+        if (blank(typed)) return null;
+        final var parts = typed.trim().split("\\s*-\\s*");
+        try {
+            if (parts.length == 1) { final var v = Integer.parseInt(parts[0]); return new int[]{v, v}; }
+            if (parts.length == 2) return new int[]{Integer.parseInt(parts[0]), Integer.parseInt(parts[1])};
+        } catch (NumberFormatException e) {
+            // falls through to the message below
+        }
+        throw new IllegalArgumentException(what + " must be a number or a range like 4-5, not \"" + typed.trim() + "\"");
+    }
+
+    private static void render(int[] g, int rows, int cols, String indent) {
+        for (var r = 0; r < rows; r++) {
+            final var sb = new StringBuilder(indent);
+            for (var c = 0; c < cols; c++) sb.append(g[r * cols + c] == 1 ? 'x' : '.');
+            System.out.println(sb);
         }
     }
 
-    /** [4] Query by grid: the exact typed placement (no centering) — resolve its label and verdict. */
-    static void queryGrid(Plexus plexus, Scanner in, int side) {
-        try {
-            System.out.print("exact grid placement (e.g. .../.x./xxx):  ");
-            final var grid = parseGrid(in.nextLine(), side);
-            System.out.println("\n" + new GridQuery(grid).apply(plexus));
-        } catch (RuntimeException e) {
-            System.out.println("bad query: " + e.getMessage());
-        }
-    }
+    // ---- parsing ---------------------------------------------------------------------------------------
 
-    /** [9] Decompose: factor a typed shape into atoms under a cut-law (straight = bars, bent = Ls). */
-    static void queryDecompose(Plexus plexus, Scanner in, int side) {
-        try {
-            System.out.print("shape to decompose (e.g. xxx/.x.):  ");
-            final var grid = parseGrid(in.nextLine(), side);
-            System.out.print("cut law (straight = bars / bent = Ls; blank = straight):  ");
-            final var law = in.nextLine().trim().toLowerCase().startsWith("b")
-                    ? Decompose.CutLaw.BENT : Decompose.CutLaw.STRAIGHT;
-            System.out.println("\n" + new Decompose(grid, law).apply(plexus).render());
-        } catch (RuntimeException e) {
-            System.out.println("bad query: " + e.getMessage());
+    /** The labelled examples of a data file, in file order. */
+    static List<Example> parse(Path file) throws IOException {
+        final var lines = Files.readAllLines(file);
+        final var rows = Integer.parseInt(lines.get(0).split("x")[0].trim());
+        final var body = lines.subList(1, lines.size());
+        final var out = new ArrayList<Example>();
+        for (var i = 0; i + rows < body.size(); i += rows + 1) {
+            final var cells = body.subList(i, i + rows).stream().flatMapToInt(String::chars).map(ch -> ch == 'x' ? 1 : 0).toArray();
+            out.add(new Example(cells, Integer.parseInt(body.get(i + rows).trim())));
         }
-    }
-
-    /** [s] Scale: coarse-grain a typed grid by k×k block-decimation (the renormalization direction, §11). */
-    static void queryScale(Plexus plexus, Scanner in, int side) {
-        try {
-            System.out.print("grid to coarse-grain (e.g. xxx/.x.):  ");
-            final var grid = parseGrid(in.nextLine(), side);
-            System.out.print("block size k (must divide " + side + "; blank = 2):  ");
-            final var kLine = in.nextLine().trim();
-            final var k = kLine.isEmpty() ? 2 : Integer.parseInt(kLine);
-            System.out.print("rule (canonical / occupancy / majority; blank = canonical):  ");
-            final var r = in.nextLine().trim().toLowerCase();
-            final var rule = r.startsWith("m") ? Scale.Rule.MAJORITY
-                    : r.startsWith("o") ? Scale.Rule.OCCUPANCY : Scale.Rule.CANONICAL;
-            System.out.println("\n" + new Scale(grid, k, rule).apply(plexus).render());
-        } catch (RuntimeException e) {
-            System.out.println("bad query: " + e.getMessage());
-        }
+        return out;
     }
 
     /**
-     * [2] Query by invariant: list contexts whose named coordinate matches, e.g. {@code sig=167} (mass and
-     * connectivity are packed inside {@code sig}, so they are queried through it, not as separate columns).
+     * A typed grid in the frame's own terms, placed at the top-left: rows separated by {@code '/'}, {@code 'x'}
+     * or {@code '1'} filled, anything else empty. A slashless string is chunked into rows of the frame's width.
      */
-    static void queryInvariant(Plexus plexus, Scanner in) {
-        try {
-            System.out.print("invariant filter (e.g. sig=167):  ");
-            final var parts = in.nextLine().split("=", 2);
-            final var col = parts[0].trim();
-            final var val = Integer.parseInt(parts[1].trim());
-            System.out.println("\n" + new SliceReport("contexts with " + col + "=" + val,
-                    node -> { final var v = plexus.namedCoords(node.key()).get(col); return v != null && v == val; }).apply(plexus));
-        } catch (RuntimeException e) {
-            System.out.println("bad query: " + e.getMessage());
-        }
-    }
-
-    /**
-     * [b] Slice by surviving symmetry: name the symmetries that must be <em>kept</em> (a partial stabilizer)
-     * and list every full descriptor whose context preserves at least those, regenerating each one's shapes.
-     * Blank asks for nothing, which matches every context and so prints the whole vocabulary.
-     */
-    static void querySymmetrySlice(Plexus plexus, Scanner in, int side) {
-        try {
-            System.out.print("surviving symmetries (e.g. mirrorH; blank = no requirement):  ");
-            final var line = in.nextLine().trim();
-            System.out.print("max shapes to regenerate per context (blank = 4):  ");
-            final var capLine = in.nextLine().trim();
-            final var cap = capLine.isEmpty() ? 4 : Integer.parseInt(capLine);
-            // Blank means "require nothing" — mask 0, not maskOf's implicit identity, so radial contexts
-            // (which carry no stabilizer) are included rather than filtered out by the identity bit.
-            final var mask = line.isEmpty() ? 0 : maskOf(plexus.group(), line);
-            System.out.println("\n" + new SymmetrySlice(mask, side, cap).apply(plexus));
-        } catch (RuntimeException e) {
-            System.out.println("bad query: " + e.getMessage());
-        }
-    }
-
-    /** [3] Query by label: list contexts whose answer is the requested label (1=TARGET, 0=reject). */
-    static void queryLabel(Plexus plexus, Scanner in) {
-        try {
-            System.out.print("label (1=TARGET, 0=reject):  ");
-            final var want = Integer.parseInt(in.nextLine().trim());
-            System.out.println("\n" + new SliceReport("contexts answering " + want,
-                    node -> node.context().answer() == want).apply(plexus));
-        } catch (RuntimeException e) {
-            System.out.println("bad query: " + e.getMessage());
-        }
-    }
-
-    /** The shape's own stabilizer in its centred frame — the default "allowed symmetries". */
-    static int selfStabilizer(Plexus plexus, int[] grid) {
-        final var c = Plexus.center(grid);
-        return c == null ? 1 : plexus.group().stabilizer(c);
-    }
-
-    /** Parse a comma-separated symmetry list to a stabilizer bitmask; identity is always included. */
-    static int maskOf(SymmetryGroup group, String s) {
-        final var ts = group.transforms();
-        var mask = 1;                                                  // identity (bit 0) always present
-        for (final var part : s.split(",")) {
-            final var name = part.trim();
-            if (name.isEmpty()) continue;
-            var found = false;
-            for (var i = 0; i < ts.size(); i++) if (ts.get(i).label().equalsIgnoreCase(name)) { mask |= 1 << i; found = true; }
-            if (!found) throw new IllegalArgumentException("unknown symmetry: " + name);
-        }
-        return mask;
-    }
-
-    /**
-     * Parses a grid in the object's own terms and pads it into the {@code side×side} frame at top-left.
-     * Rows are separated by {@code '/'} ({@code 'x'}/{@code '1'} on, anything else off); trailing empty
-     * rows and short rows need not be written, so {@code "xxx/.x."} is the 2×3 object, not a padded 3×3.
-     * A slashless string is chunked into rows of width {@code side}. The shape must fit the frame.
-     */
-    static int[] parseGrid(String s, int side) {
+    static int[] parseGrid(String s, int frameRows, int frameCols) {
         final var clean = s.replaceAll("\\s", "");
-        final var rows = new ArrayList<String>();
-        if (clean.contains("/")) {
-            for (final var part : clean.split("/", -1)) rows.add(part);
-        } else {
-            for (var i = 0; i < clean.length(); i += side) rows.add(clean.substring(i, Math.min(clean.length(), i + side)));
-        }
-        final var h = rows.size();
-        final var w = rows.stream().mapToInt(String::length).max().orElse(0);
-        if (h > side || w > side)
-            throw new IllegalArgumentException("shape " + h + "x" + w + " is larger than the " + side + "x" + side + " frame");
-        final var g = new int[side * side];
-        for (var r = 0; r < h; r++) {
-            final var row = rows.get(r);
-            for (var c = 0; c < row.length(); c++) {
-                final var ch = row.charAt(c);
-                if (ch == 'x' || ch == 'X' || ch == '1') g[r * side + c] = 1;
+        final var lines = new ArrayList<String>();
+        if (clean.contains("/")) lines.addAll(List.of(clean.split("/", -1)));
+        else for (var i = 0; i < clean.length(); i += frameCols) lines.add(clean.substring(i, Math.min(clean.length(), i + frameCols)));
+        final var h = lines.size();
+        final var w = lines.stream().mapToInt(String::length).max().orElse(0);
+        if (h > frameRows || w > frameCols)
+            throw new IllegalArgumentException("shape " + h + "x" + w + " is larger than the " + frameRows + "x" + frameCols + " frame");
+        final var g = new int[frameRows * frameCols];
+        for (var r = 0; r < h; r++)
+            for (var c = 0; c < lines.get(r).length(); c++) {
+                final var ch = lines.get(r).charAt(c);
+                if (ch == 'x' || ch == 'X' || ch == '1') g[r * frameCols + c] = 1;
             }
-        }
         return g;
     }
 
-    /**
-     * Parses the dataset into one list of labelled examples, kept in file order.
-     * The first line is the {@code nxm} dimensions; the remainder are records of
-     * {@code n} grid rows ('_' empty, 'x' occupied) followed by a 0/1 label.
-     */
-    static List<Example> parse(Path file) throws IOException {
-        final var lines = Files.readAllLines(file);
-        final var rows = Integer.parseInt(lines.get(0).split("x")[0]);
-        final var stride = rows + 1;
-        final var body = lines.subList(1, lines.size());
-
-        final var out = new ArrayList<Example>();
-        IntStream.iterate(0, i -> i < body.size(), i -> i + stride)
-                .forEach(i -> {
-                    final var cells = body.subList(i, i + rows).stream()
-                            .flatMapToInt(String::chars)
-                            .map(ch -> ch == 'x' ? 1 : 0)
-                            .toArray();
-                    final var label = Integer.parseInt(body.get(i + rows).trim());
-                    out.add(new Example(cells, label));
-                });
-        return out;
-    }
+    private Main() { }
 }

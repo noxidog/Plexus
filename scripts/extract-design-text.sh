@@ -2,14 +2,13 @@
 # Flatten the docs/ design set into one plain-text reading copy.
 #
 # Input is the whole document set, concatenated in reading order (README first, so its
-# traceability table serves as the dump's table of contents). Each file already opens with
+# index table serves as the dump's table of contents). Each file already opens with
 # its own "# Title", which is what separates the sections once the markers are stripped.
 #
 # Block level: fenced code blocks are KEPT, indented four spaces and passed through
-#   verbatim — they carry the ASCII diagrams, the descriptor() snippet, the REPL menu and
-#   the measured tables. Dropped instead: image lines, table separator rows (|---|),
-#   horizontal rules, HTML anchors, and the per-file navigation blockquote that would
-#   otherwise repeat nineteen times.
+#   verbatim — they carry the key layout, the trie diagram, the slice call and the REPL
+#   menu. Dropped instead: image lines, table separator rows (|---|), horizontal rules,
+#   HTML anchors, and any "Part of the [Plexus design set]" navigation blockquote.
 # Inline level (prose lines only, never code): [text](url) -> text; heading markers,
 #   emphasis (*), inline-code backticks, blockquote '>', &nbsp;, and table pipes (kept as
 #   spacing) are removed. Underscores are left alone.
@@ -21,27 +20,16 @@
 set -e
 OUT="${1:-PLEXUS_DESIGN_TEXT_ONLY.txt}"
 
-# Reading order. Explicit, not a glob: lexicographic sort would file design.md after
-# 10-implementation.md, and the appendices must trail the specification.
+# Reading order. Explicit, not a glob: lexicographic sort would file design.md after the
+# numbered sections.
 SET="docs/README.md
 docs/design.md
-docs/01-architecture.md
-docs/02-core-model.md
-docs/03-invariants.md
-docs/04-symmetry.md
-docs/05-trie.md
-docs/06-search.md
-docs/07-descriptors.md
-docs/08-diagnostics.md
-docs/09-api.md
-docs/10-implementation.md
-docs/appendices/A-mathematical-background.md
-docs/appendices/B-design-rationale.md
-docs/appendices/C-rejected-designs.md
-docs/appendices/D-performance-notes.md
-docs/appendices/E-formal-proofs.md
-docs/appendices/F-examples.md
-docs/appendices/G-history.md"
+docs/01-descriptor.md
+docs/02-trie.md
+docs/03-extension.md
+docs/04-slices.md
+docs/05-cli.md
+docs/06-engine.md"
 
 for f in $SET; do
     [ -f "$f" ] || { echo "missing: $f" >&2; exit 1; }

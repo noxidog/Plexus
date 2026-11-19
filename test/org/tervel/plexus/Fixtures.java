@@ -1,13 +1,5 @@
 package org.tervel.plexus;
 
-import org.tervel.plexus.invariants.Connectivity;
-import org.tervel.plexus.invariants.Invariant;
-import org.tervel.plexus.invariants.Mass;
-import org.tervel.plexus.invariants.Signature;
-import org.tervel.plexus.residual.ExactExceptions;
-import org.tervel.plexus.symmetry.Dihedral;
-import org.tervel.plexus.symmetry.SymmetryGroup;
-
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -15,10 +7,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Shared dataset wiring for the suite — the same frame/group/chain decisions {@code Main} makes, so a test
- * exercises the shipped configuration rather than an idealised one.
- */
+/** The reference datasets, loaded independently of the CLI's parser so a parser defect cannot hide in both. */
 final class Fixtures {
 
     /** Every reference dataset, by file stem. */
@@ -27,30 +16,17 @@ final class Fixtures {
             "separable-path-fork-5x5", "entropy-fiber-gap-5x5", "renormalization-path-fork-9x9",
             "rect-bar-2x4");
 
-    /** The square-framed datasets — the geometry-heavy ops and the Primitive battery assume a square. */
-    static final List<String> SQUARE = ALL.stream().filter(n -> !n.equals("rect-bar-2x4")).toList();
-
-    record Data(List<int[]> grids, List<Integer> labels, int rows, int cols,
-                SymmetryGroup group, List<Invariant> chain) {
+    record Data(List<int[]> grids, List<Integer> labels, int rows, int cols) {
         boolean square() { return rows == cols; }
 
-        /** A router trained on this dataset, wired exactly as {@code Main} wires it. */
+        /** A router trained on this dataset. */
         Plexus trained() {
-            final var p = new Plexus(group, chain, new ExactExceptions(), rows, cols);
+            final var p = new Plexus(rows, cols);
             p.fit(grids, labels);
             return p;
         }
-
-        /** An untrained router — for tests that drive {@code accept} themselves. */
-        Plexus empty() { return new Plexus(group, chain, new ExactExceptions(), rows, cols); }
     }
 
-    /**
-     * Load a reference dataset. The parsing is deliberately <b>independent</b> of the CLI's parser rather
-     * than delegating to it: a suite that builds its inputs with the same code it is testing cannot see a
-     * parser defect, because the defect would be applied to both sides. The format is small enough that a
-     * second reading of it is cheap insurance.
-     */
     static Data load(String stem) {
         final var file = Path.of("data", stem + ".txt");
         try {
@@ -65,12 +41,7 @@ final class Fixtures {
                 labels.add(Integer.parseInt(body.get(i + rows).trim()));
             }
             final var cols = grids.get(0).length / Math.max(1, rows);
-            final var square = rows == cols;
-            final var group = square ? Dihedral.d4() : Dihedral.d2();
-            final var connectivity = square ? new Connectivity() : new Connectivity(rows, cols);
-            final List<Invariant> chain =
-                    List.of(new Signature(new Mass(), connectivity, square ? rows : rows + cols));
-            return new Data(List.copyOf(grids), List.copyOf(labels), rows, cols, group, chain);
+            return new Data(List.copyOf(grids), List.copyOf(labels), rows, cols);
         } catch (IOException e) {
             throw new UncheckedIOException("cannot load " + file, e);
         }

@@ -2,33 +2,31 @@
 
 ![Plexus](../assets/plexus-logo.png)
 
-*A symmetry-routed exact classifier — how it resolves a shape to a label.*
+*A symmetry-routed exact classifier: it files every shape by what it is, not where it sits.*
 
 ---
 
 ## 0. The task
 
-The input is a **binary grid** (an `int[]` of `rows × cols` cells, each 0 or 1 — square by default, `side²`). Each grid carries a label: **1 if it belongs to a target shape class, 0 otherwise**. The class is defined by *structure under symmetry* — a shape and all of its rotations/reflections form one class — so the positives are typically a handful of symmetry orbits in a sea of negatives.
+The input is a **binary grid**: an `int[]` of `rows × cols` cells, each 0 or 1. Each grid carries a label, 1 if it belongs to a target class and 0 otherwise. The classes are defined by **shape**: a shape and its turns, mirror images and moves are usually one class, but the data decides that, shape by shape. Sometimes a shape's orientation or position *is* the class (a side T against an upright T, a dot in the corner against a dot in the centre), and the router has to keep those apart when, and only when, the labels say so.
 
-The hard case is **contradictions**: grids labelled *against their own symmetry orbit*. Two shapes can be identical under every symmetry-derived quantity yet carry opposite labels (e.g. one member of an orbit flipped to 0 while its orbit-mates stay 1, or a shape labelled 1 while its rotated copies stay 0). No symmetry quantity can separate such a pair — they are the crux the design must handle honestly rather than smooth over.
-
-**The domain frame is read, not assumed.** `cli.Main` takes `rows × cols` off the data's `nxm` header ([§8](09-api.md)) and picks the group to match: **square** domains route under D4, **rectangular** (non-square) ones under D2, the transpose-free subgroup ([§2](04-symmetry.md); [§11](appendices/A-mathematical-background.md), *the rectangle*). The routing core — descriptor, context, score, topology — handles both, and so does whole-grid rendering (`Report.renderGrid` reads the true `rows × cols` off the Plexus). Where a report cannot follow, it says so rather than printing a misleading zero: `[b] SymmetrySlice` announces that regeneration is unavailable on a rectangular domain.
-
-> *Reference datasets (`data/`, one slice-question each — see `data/README.md`): minimal by construction. Each carries only the positive class, plus — for the collision sets — the few negatives that share a context with a positive; the router defaults every unseen key to reject, so the sea of negatives is redundant. The canonical example is the T-tetromino orbit on a 3×3 grid (`conservation-t-orbit-3x3`), with adversarial variants injecting the contradictions above (`twin-t-flip`, `position-corner-dot`). Useful as concrete examples; nothing in the core depends on these numbers.*
-
----
+The hard case is **contradiction**: two grids that agree on every coordinate the router reads but carry opposite labels. Plexus handles them exactly. Where the trailing coordinates (orientation, pose, corner) separate them, they do; where different shapes collide, a new shape coordinate is inserted if one of the battery's primitives tells them apart; and what is left (the same grid trained with both labels, or different shapes no primitive separates) stays as stored grids at the leaf, each answering with its own majority, never smoothed over.
 
 ## 1. What it is
 
-`Plexus` is a *router*, not a network. It has no learned weights, no gates, no thresholds, no statistics. Every input is **resolved to a context** by pure structural routing, and the context returns its label.
+Plexus is a **router, not a network**. It has no weights, no thresholds, no statistics. Every grid is described ([§2](01-descriptor.md)), filed under a key in one of two tries ([§3](02-trie.md)), and read back with one of four verdicts.
 
 ```
-score(grid):  grid  ──descriptor──▶  Key  ──▶  Context  ──▶  label
+grid ──describe──▶ D4 root / D6 root → box → symmetry walk → mass → joins → [extensions] → orientation → pose → corner
 ```
 
-Two phases:
+| Part | What it does |
+|---|---|
+| [Descriptor](01-descriptor.md) | bounding box, lattice pick (square or hex), canonical pose, the symmetry walk's answers, mass, joins, and the trailing coordinates |
+| [The trie](02-trie.md) | two tries, training, the four verdicts and the extrapolation setting |
+| [Self-extension](03-extension.md) | a new shape coordinate where different shapes collide; `[8]` diagnose |
+| [Slices](04-slices.md) | constraints per level, a callback per grid, constructive generation |
+| [The interpreter](05-cli.md) | `cli.Main`: score, trie, grid, slice, diagnose |
+| [The engine](06-engine.md) | lazy grids, templates in every pose, stages folded over a grid, for a domain layer to drive |
 
-1. **Resolve** — build a composite routing `Key` from the grid: a *symmetry verdict* refined by a chain of *orthogonal, symmetry-invariant coordinates*.
-2. **Decide** — the `Context` the key addresses owns its answer: its **majority label**, overridden by an **exact set of exceptions** (the grids whose label contradicts that majority).
-
-Resolution is exact and discrete; the only memory is the set of contradicting grids, and self-extension ([§5](02-core-model.md)) drives even that down to the irreducible twins.
+The unifying idea is the **slice**: fix some coordinates of the key and read what stays constant, or enumerate what varies. Classification runs the key forward (grid to answer); a slice runs it backward (constraints to every grid that answers so). The same tries serve both.

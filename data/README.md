@@ -1,57 +1,23 @@
-# Datasets — one slice-question each
+# Datasets — one question each
 
-Every dataset here is a **slice**: it fixes some coordinates of the descriptor so that
-loading it and running one menu op asks a specific question of the router (the §11
-"physics as slices" reading). Naming is `<question>-<shape>-<size>`. Run any with:
+Every dataset fixes something about the shapes so that training on it and running one command asks a specific question of Plexus. Naming is `<question>-<shape>-<size>`. Run any with:
 
 ```
 java -cp out org.tervel.plexus.cli.Main data/<file>
 ```
 
-The startup post-pass prints the collision diagnostic; the menu cells in parentheses
-below are how to ask each question interactively (§8).
+The startup line reports the tries' size and any extension inserted; the commands in the table are how to ask each question ([docs §6](../docs/05-cli.md)).
 
 ## Datasets are minimal by construction
 
-The router defaults every **unseen** key to reject (label 0) and a context owns its label
-by **majority**, so the sea of negatives is redundant — it is just the default. Each file
-therefore carries **only the positive class**, plus, for the *collision* datasets, the
-**few negatives that share a context with a positive** (a contradiction cannot be expressed
-by default-reject — the opposing label must actually land in the same context). That is the
-whole asset: no background fill.
+An unseen key answers UNSEEN, so a sea of negatives adds nothing. Each file carries the positive class plus, where a question needs it, the few negatives that share a path with a positive: a contradiction only exists when the opposing label lands on the same node.
 
-| dataset | records | slice fixed | question it asks | ask it with |
-|---|---|---|---|---|
-| `conservation-t-orbit-3x3.txt` | 8 (all +) | the symmetry (the full T orbit, no contradiction) | *Hold the symmetry still — what is the conserved identity?* | `[1] stabilizer` (solve from label 1 → the fold group), `[6] topology` |
-| `twin-t-flip-3x3.txt` | 8 (7 + / 1 −) | one orbit member flipped | *Which moves keep me myself, and which kill the label? (the irreducible twin)* | startup `diagnose` → PROVABLE TWIN; `[1] stabilizer`, `[4] grid` on the flipped placement |
-| `position-corner-dot-3x3.txt` | 9 (1 + / 8 −) | a dot at the top-left corner is 1, every other dot 0 | *When a shape has no orientation, what routes it? (the radial Position axis)* | startup `diagnose` → radial twin; `[1] stabilizer` radial solve (`gather` on 1 → `top-left`) |
-| `separable-path-fork-5x5.txt` | 2 (1 + / 1 −) | a fork (Δ=3) vs a path (Δ=2) of equal (V,E) | *Does my chain need a new axis to tell these apart? (mint a coordinate)* | startup `diagnose` → emits the `max-degree` blueprint |
-| `entropy-fiber-gap-5x5.txt` | 2 (all +) | a pure target class seen only twice | *Given all I can measure, how many distinct states stay indistinguishable? (entropy = log\|fiber\|)* | `[7] possibility` → `fiber=192 seen=2/192` |
-| `renormalization-path-fork-9x9.txt` | 12 (6 + / 6 −) | path-vs-fork at side 9 (so `k=3` decimation is non-degenerate) | *Is the structural law the same at every scale, or does it shatter under coarse-graining?* | startup `diagnose` (fine-scale separable collision); full two-scale verdict asserted by `RenormalizationTest` |
-| `rect-bar-2x4.txt` | 8 (3 + / 5 −) | the **domain** — a non-square `2×4` frame, so the group is D2, not D4 | *What does breaking a symmetry buy?* | `[b] symmetry` → the vocabulary keeps `mirrorH` **and** `mirrorV` as distinct stabilizers, which a square table cannot spell; `[t] trie` (the census example in §5 is this dataset); `[6] topology` |
-
-## The two kinds of question (§11)
-
-- **Read-an-existing-coordinate** — conservation, twin, position, entropy: the slice cuts, and
-  the answer is a value the descriptor already holds.
-- **Mint-a-new-coordinate** — separable (`max-degree`) and renormalization (the fold raising the
-  exception floor): the current chain can't resolve it, so the answer is a *new dimension of
-  description* — the diagnostic emitting a blueprint. These are the "best questions": their
-  answers grow the descriptor rather than reading it.
-- **Change-the-domain** — `rect-bar`: neither reads nor mints a coordinate but alters the *group*
-  the whole descriptor is built from. Breaking the transpose (D4 → D2) makes the two axes
-  incommensurable, and the payment shows up as **vocabulary**: `mirrorH` and `mirrorV` stop being
-  one rotation-conjugacy class and become separately askable (§11, *the rectangle*).
-
-Three ops interrogate the machine rather than the data, so they apply to every dataset:
-`[c] critic` grades each coordinate (legal / useful / new / earned / not cheating) and says, per
-collision, whether extending is even possible; `[b] symmetry` slices the table by surviving
-symmetry and regenerates the shapes that keep it; `[t] trie` prints the store's own shape — nodes
-per rung, which are already pure, and which rungs decided nothing (the prefix census).
-
-The full two-scale renormalization experiment is asserted, not printed — `RenormalizationTest`
-in the suite fails if coarse-graining ever stops shattering the path/fork distinction:
-
-```
-mvn test
-```
+| dataset | records | question it asks | ask it with |
+|---|---|---|---|
+| `conservation-t-orbit-3x3.txt` | 8 (all +) | All eight T's (four orientations, two placements each): do they share one shape path? | `[t]`: one path down to joins, split only at orientation, pose and corner |
+| `twin-t-flip-3x3.txt` | 8 (7 + / 1 −) | One T placement labelled 0: does it need a new coordinate, or is it the same shape in another place? | `[8]`: one shape, separated by orientation, pose or corner; `[5]` reads all 8 back |
+| `position-corner-dot-3x3.txt` | 9 (1 + / 8 −) | A dot is 1 only in the top-left corner: does position survive a pose-free key? | `[8]`: one shape, separated by orientation, pose or corner (here the corner: `[t]` shows nine corner leaves). A dot's box is 1×1 and it has more symmetry on hex (12) than on squares (8), so it files under D6 |
+| `separable-path-fork-5x5.txt` | 2 (1 + / 1 −) | A fork and a path with the same box (2×4), no symmetry, mass 5 and joins 4: which coordinate tells them apart? | startup line and `[8]`: `max-degree` inserted |
+| `entropy-fiber-gap-5x5.txt` | 2 (all +) | A class seen only twice: how many grids does Plexus answer for beyond them? | `[s]` with label 1 under each setting: 2 confirmed, and 0, 94, 190, then 766 assumed as the setting widens |
+| `renormalization-path-fork-9x9.txt` | 12 (6 + / 6 −) | Fork against path in a 9×9 frame, both 2×3 with mass 4 and joins 3: does the key separate them without help? | `[t]`: they part at the symmetry walk (the fork has the short-axis mirror, the path does not), so no extension is inserted; `[5]` reads all 12 back |
+| `rect-bar-2x4.txt` | 8 (3 + / 5 −) | A non-square 2×4 frame: 1×3 bars are 1; a dot, dominoes, the 1×4 bar and a 2×2 block are 0 | `[t]`: one box per shape size (1×2, 1×3, 1×4, 2×2), and the dot under D6 |

@@ -4,21 +4,21 @@
 
 **A symmetry-routed exact classifier — a router, not a network.**
 
-Plexus has no weights, no gates, no thresholds, no statistics. It resolves a binary grid to a
-label by *pure structural routing*: a symmetry verdict (the shape's stabilizer under the dihedral
-group D4) refined by an injected chain of D4-invariant coordinates, addressing one **context** that
-owns its answer (majority label, with the contradictions it cannot resolve held exactly rather than
-smoothed over). Resolution is exact and discrete, and the only memory is those contradictions: turn on
-self-extension and the store grows a new coordinate wherever one would separate them, leaving just the
-provable *twins* that no invariant ever could.
+Plexus has no weights, no thresholds, no statistics. It files every binary grid by what its shape **is**, not where it sits:
 
-The unifying idea is the **slice**: fix some coordinates of the descriptor and read what stays
-constant / enumerate what varies. Classification runs the descriptor forward; generation runs it
-backward (enumerate a context's fiber). The same move, read two ways.
+```
+D4 root / D6 root → box → symmetry walk → mass → joins → [extensions] → orientation → pose → corner
+```
+
+The bounding box of the non-zero pixels picks the lattice (square, or hex when a square box gains symmetry by shearing its rows). The shape is turned into a canonical pose and walked through one yes/no question per symmetry. Mass and joins follow, then how and where the shape arrived. Two tries, one per lattice, hold the counts; every partial key is a node with its own evidence.
+
+A read answers **POSITIVE**, **NEGATIVE**, **ASSUMED** (a pure node stands in for something never seen, as far as the extrapolation setting allows) or **UNSEEN**. Where different shapes collide, Plexus inserts a shape coordinate on its own; where one shape is labelled differently by pose or place, the trailing levels already separate it. Contradictions are kept exactly, never smoothed over.
+
+The unifying idea is the **slice**: fix some coordinates of the key and enumerate everything that answers so. Classification runs the key forward; a slice runs it backward, and generates the grids it would answer for.
 
 ## Quickstart
 
-Requires **Java 21+** (records, sealed interfaces). No dependencies — the JDK is the whole toolchain.
+Requires **Java 21+**. No dependencies — the JDK is the whole toolchain.
 
 ```sh
 # compile (macOS/Linux)
@@ -30,74 +30,60 @@ javac -d out (Get-ChildItem -Recurse src -Filter *.java).FullName
 java -cp out org.tervel.plexus.cli.Main data/conservation-t-orbit-3x3.txt
 ```
 
-To use it as a library rather than clone it — the published artifact carries no dependencies of its
-own, since JUnit is test-scoped and test scope is not transitive:
-
-```xml
-<dependency>
-    <groupId>io.github.noxidog</groupId>
-    <artifactId>plexus</artifactId>
-    <version>1.1.0</version>
-</dependency>
+```
+[5] score  [t] trie  [4] grid  [s] slice  [8] diagnose  [q] quit
 ```
 
-```groovy
-implementation 'io.github.noxidog:plexus:1.1.0'
-```
+As a library:
 
-The REPL menu is a 2-D grid — classify/generate (rows) by node/whole-table (columns):
-
-```
-               a node                                  the whole table
-  resolve  ->  [1] stabilizer  [4] grid                [5] score
-  generate <-  [2] invariant   [3] label  [b] symmetry  [9] atoms  [s] scale  [p] prime    [6] topology  [t] trie  [7] possibility  [v] volume  [8] diagnose  [c] critic
-  [q] quit
+```java
+final var plexus = new Plexus(3, 3);                 // the input frame
+plexus.fit(grids, labels);
+final var answer = plexus.read(grid);                // POSITIVE, NEGATIVE, ASSUMED or UNSEEN, with its context
+plexus.slice(Slice.on(Root.D4).atLeast("short-axis mirror").label(1),
+             (g, context, evidence) -> { ... });     // every matching grid, CONFIRMED or ASSUMED
 ```
 
 ## Sixty seconds of output
 
-**Automated invariant discovery.** Feed it a dataset where a path and a fork collide on every
-routing coordinate (`data/separable-path-fork-5x5.txt`), press `[8]`, and the collision diagnostic
-proves the collision is reducible and emits the formal spec of the missing invariant:
+**The trie keeps shape and pose apart.** Trained on the eight T's of a 3×3 frame, `[t]` shows them sharing one shape path and splitting only at the trailing levels:
 
 ```
-context [identity] sig=209
-  collision: 1 positive / 1 negative (entropy 1.000 bits)
-  verdict: SEPARABLE — colliding labels live in disjoint orbits.
-  winning primitive: max-degree  (information gain 1.000 / 1.000 bits, EXACT split)
-  blueprint (formal specification for the next Invariant):
-    Δ(G) = max_{v∈V} deg(v) ... Separates branched cores (Δ≥3, e.g. the T's fork) from paths/cycles (Δ≤2).
-  fiber breadth: 584 structures route here; primitive spreads them over 2 distinct values.
+D4 root  [neg 0, pos 8]
+  box=2x3  [neg 0, pos 8]
+    rot180=no  [neg 0, pos 8]
+      short-axis mirror=yes  [neg 0, pos 8]
+        long-axis mirror=no  [neg 0, pos 8]
+          mass=4  [neg 0, pos 8]
+            joins=3  [neg 0, pos 8]
+              turned=no  [neg 0, pos 4]
+              ...
+              turned=yes  [neg 0, pos 4]
+              ...
 ```
 
-On the twin dataset (`data/twin-t-flip-3x3.txt`) the same press answers **PROVABLE SYMMETRY-TWIN** —
-no invariant can ever separate orbit-mates, so the contradiction is memorised exactly, not modelled.
-
-**The thread is the determinant.** Press `[v]` on the T-orbit dataset and the fiber volume is
-measured five independent ways, with the orbit-stabilizer theorem checked as an exact identity:
+**You choose how far it extrapolates.** On the same data, `[4]` with the L `xxx/x..` (same box, mass and joins as the T, but no mirror):
 
 ```
-  key                       |fiber| |orbit|  [G:Stab]  sqrt detJJ'  #span-tree  id
-  ------------------------------------------------------------------------------------
-  identity, mirrorH sig=55        8       4         4         8.25           1  ok
+  RECT on D4, box 2x3, symmetries [], mass 4, joins 3, orientation 0, pose 0, corner (0,0)
+  NONE       UNSEEN     D4 box=2x3 → rot180=no  [neg 0, pos 8]
+  PLACEMENT  UNSEEN     D4 box=2x3 → rot180=no  [neg 0, pos 8]
+  SYMMETRY   ASSUMED  label 1   D4 box=2x3 → rot180=no  [neg 0, pos 8]
+  EVERYTHING ASSUMED  label 1   D4 box=2x3 → rot180=no  [neg 0, pos 8]
 ```
 
-The experiments are assertions, not printouts — the two-scale renormalization result, the
-optimal-stopping dial, and the self-extension memory figures all live in `test/` and fail if
-they drift:
+**It grows the coordinate it needs.** On `data/separable-path-fork-5x5.txt` a path and a fork share box, symmetry, mass and joins; `[8]` shows what Plexus inserted:
 
-```sh
-mvn test
 ```
+mixed nodes and what resolves them
+  D4 box=2x4 → rot180=no → short-axis mirror=no → long-axis mirror=no → mass=5 → joins=4  [neg 1, pos 1]
+    -> several shapes: separated by max-degree
+```
+
+The behaviour is asserted, not just printed: the suite checks pose-free keys on every dataset, the stand-ins, extension, and that what a slice generates is exactly what reading answers for.
 
 ## Where to read more
 
-- **[docs/](docs/README.md)** — the full design, as a document set: the symmetry core, the invariant
-  chain, the residual boundary, the two inverse operations, decomposition, and the "frames as physics"
-  reading (treating the machine's structure as a coherence argument for analyzing the world). Start at
-  [docs/README.md](docs/README.md) for the index and the reading orders.
-- **[data/README.md](data/README.md)** — the datasets, each posing one slice-question (conservation,
-  twin, position, separable, entropy, renormalization) and how to ask it from the menu.
-- **[Plexus: Intuitions from a Symmetry Machine](https://noxidog.substack.com/p/plexus)** — the
-  companion essay series, including a prompt that has your AI client explain Plexus through the
-  lens of your own occupation.
+- **[docs/](docs/README.md)** — the design as a document set: the descriptor, the trie and the extrapolation setting, self-extension, slices, and the interpreter.
+- **[data/README.md](data/README.md)** — the datasets and the question each one asks.
+- **[Plexus: Intuitions from a Symmetry Machine](https://noxidog.substack.com/p/plexus)** — the companion essay series.
